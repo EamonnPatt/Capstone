@@ -23,7 +23,7 @@ SCENARIOS = [
         'name': 'Network Fundamentals',
         'difficulty': 'Beginner',
         'description': 'Understanding basic networking concepts',
-        'vms': ['Linux Ubuntu']
+        'vms': ['linux ubuntu']
     },
     {
         'id': 'intermediate-1',
