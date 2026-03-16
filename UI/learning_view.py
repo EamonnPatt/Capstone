@@ -2,7 +2,8 @@
 Learning resources view
 """
 
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QLabel, QFrame
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QScrollArea, QLabel, QFrame, QHBoxLayout
+from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QFont
 from core.data import LEARNING_MODULES
 from utils.styles import MODULE_CARD_STYLE, COLORS
@@ -12,38 +13,74 @@ class LearningView(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setup_ui()
-    
+
     def setup_ui(self):
-        layout = QVBoxLayout()
-        layout.setContentsMargins(40, 30, 40, 30)
-        layout.setSpacing(20)
-        
-        # Header
+        outer = QVBoxLayout()
+        outer.setContentsMargins(40, 30, 40, 30)
+        outer.setSpacing(20)
+
         header = QLabel("Learning Resources")
         header.setFont(QFont('Arial', 28, QFont.Weight.Bold))
         header.setStyleSheet(f"color: {COLORS['text_primary']};")
-        layout.addWidget(header)
-        
-        # Module cards
+        outer.addWidget(header)
+
+        subtitle = QLabel("Study the theory before diving into the scenarios")
+        subtitle.setFont(QFont('Arial', 13))
+        subtitle.setStyleSheet(f"color: {COLORS['text_secondary']};")
+        outer.addWidget(subtitle)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
+        scroll_widget = QWidget()
+        layout = QVBoxLayout()
+        layout.setSpacing(16)
+        layout.setContentsMargins(0, 0, 0, 0)
+
         for module in LEARNING_MODULES:
             frame = QFrame()
             frame.setStyleSheet(MODULE_CARD_STYLE)
-            
+
             module_layout = QVBoxLayout()
             module_layout.setContentsMargins(25, 20, 25, 20)
-            
-            title = QLabel(f"{module['icon']} {module['name']}")
+            module_layout.setSpacing(10)
+
+            # Title row
+            title_row = QHBoxLayout()
+            title = QLabel(f"{module['icon']}  {module['name']}")
             title.setFont(QFont('Arial', 16, QFont.Weight.Bold))
             title.setStyleSheet(f"color: {COLORS['text_primary']};")
-            module_layout.addWidget(title)
-            
+            title_row.addWidget(title)
+            title_row.addStretch()
+            module_layout.addLayout(title_row)
+
             desc = QLabel(module['description'])
             desc.setFont(QFont('Arial', 11))
             desc.setStyleSheet(f"color: {COLORS['text_secondary']};")
+            desc.setWordWrap(True)
             module_layout.addWidget(desc)
-            
+
+            # Topics list
+            topics = module.get('topics', [])
+            if topics:
+                topics_label = QLabel("Topics covered:")
+                topics_label.setFont(QFont('Arial', 10, QFont.Weight.Bold))
+                topics_label.setStyleSheet(f"color: {COLORS['text_tertiary']};")
+                module_layout.addWidget(topics_label)
+
+                topics_text = "   •  " + "\n   •  ".join(topics)
+                topics_body = QLabel(topics_text)
+                topics_body.setFont(QFont('Arial', 10))
+                topics_body.setStyleSheet(f"color: {COLORS['text_secondary']};")
+                module_layout.addWidget(topics_body)
+
             frame.setLayout(module_layout)
             layout.addWidget(frame)
-        
+
         layout.addStretch()
-        self.setLayout(layout)
+        scroll_widget.setLayout(layout)
+        scroll.setWidget(scroll_widget)
+        outer.addWidget(scroll)
+
+        self.setLayout(outer)
