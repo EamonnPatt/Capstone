@@ -1,359 +1,389 @@
 """
-Scenarios view with VM display area and snapshot-aware launch
+Reusable UI widgets — Vagrant-integrated VM controls
 """
 
-from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-                              QScrollArea, QFrame, QPushButton, QMessageBox,
-                              QProgressDialog)
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
-from PyQt6.QtGui import QFont
-from UI.widgets import ScenarioItem, VMControl, VMWorker
-from utils.styles import VM_DISPLAY_AREA_STYLE, LAUNCH_BUTTON_STYLE, COLORS
+from PyQt6.QtWidgets import (QFrame, QVBoxLayout, QHBoxLayout, QLabel,
+                              QPushButton, QMessageBox, QApplication,
+                              QDialog, QTextEdit, QSizePolicy)
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject
+from PyQt6.QtGui import QFont, QTextCursor
+from utils.styles import (VM_CONTROL_STYLE, START_BUTTON_STYLE, STOP_BUTTON_STYLE,
+                           SCENARIO_ITEM_STYLE, SCENARIO_ITEM_EXPANDED_STYLE,
+                           SCENARIO_HEADER_STYLE, SCENARIO_CONTENT_STYLE, COLORS)
+from core.data import get_difficulty_color
 
 
-class ScenarioLaunchWorker(QThread):
-    """
-    Launches all VMs for a scenario in a background thread.
-    Emits progress updates and a final all_done signal.
-    """
-    progress = pyqtSignal(str)                       # status text updates
-    vm_done  = pyqtSignal(str, bool, str)            # (vm_name, success, message)
-    all_done = pyqtSignal(list)                      # list of (vm_name, success, message)
+# ──────────────────────────────────────────────────────────────────────────────
+# Signal bridge — lets worker threads safely update Qt widgets
+# ──────────────────────────────────────────────────────────────────────────────
 
-    def __init__(self, vm_manager, scenario):
-        super().__init__()
-        self.vm_manager = vm_manager
-        self.scenario = scenario
-
-    def run(self):
-        results = []
-        snapshots = self.scenario.get('snapshots', {})
-
-        for vm_name in self.scenario.get('vms', []):
-            snapshot_name = snapshots.get(vm_name)
-
-            if snapshot_name:
-                self.progress.emit(f"Restoring snapshot for {vm_name}…")
-            else:
-                self.progress.emit(f"Starting {vm_name}…")
-
-            success, message = self.vm_manager.launch_scenario_vm(vm_name, snapshot_name)
-            results.append((vm_name, success, message))
-            self.vm_done.emit(vm_name, success, message)
-
-        self.all_done.emit(results)
+class _Signals(QObject):
+    output_line  = pyqtSignal(str)
+    operation_done = pyqtSignal(bool)
+    status_changed = pyqtSignal(str)
 
 
-class ScenarioView(QWidget):
-    def __init__(self, scenarios, vm_manager, user_data, parent=None):
+# ──────────────────────────────────────────────────────────────────────────────
+# Vagrant output dialog
+# ──────────────────────────────────────────────────────────────────────────────
+
+class VagrantOutputDialog(QDialog):
+    """Floating terminal-style window that streams vagrant output."""
+
+    def __init__(self, title: str, parent=None):
         super().__init__(parent)
-        self.scenarios = scenarios
-        self.vm_manager = vm_manager
-        self.user_data = user_data
-        self.current_scenario = None
-        self._launch_worker = None
+        self.setWindowTitle(title)
+        self.setMinimumSize(700, 420)
+        self.setModal(False)
+
+        layout = QVBoxLayout()
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(10)
+
+        self.log = QTextEdit()
+        self.log.setReadOnly(True)
+        self.log.setFont(QFont("Courier New", 9))
+        self.log.setStyleSheet(f"""
+            QTextEdit {{
+                background-color: #0d1117;
+                color: #58d68d;
+                border: 1px solid {COLORS['border']};
+                border-radius: 6px;
+            }}
+        """)
+        layout.addWidget(self.log)
+
+        self.status_label = QLabel("Running…")
+        self.status_label.setFont(QFont("Arial", 10))
+        self.status_label.setStyleSheet(f"color: {COLORS['text_secondary']};")
+        layout.addWidget(self.status_label)
+
+        self.close_btn = QPushButton("Close")
+        self.close_btn.setEnabled(False)
+        self.close_btn.clicked.connect(self.accept)
+        self.close_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {COLORS['bg_tertiary']};
+                color: {COLORS['text_primary']};
+                border: none; border-radius: 6px; padding: 8px 20px;
+            }}
+            QPushButton:enabled:hover {{
+                background-color: {COLORS['border_hover']};
+            }}
+            QPushButton:disabled {{
+                color: {COLORS['text_tertiary']};
+            }}
+        """)
+        layout.addWidget(self.close_btn, alignment=Qt.AlignmentFlag.AlignRight)
+
+        self.setLayout(layout)
+
+    def append_line(self, line: str):
+        self.log.append(line)
+        self.log.moveCursor(QTextCursor.MoveOperation.End)
+
+    def mark_done(self, success: bool):
+        if success:
+            self.status_label.setText("✅  Done")
+            self.status_label.setStyleSheet(f"color: {COLORS['success']};")
+        else:
+            self.status_label.setText("❌  Failed — check output above")
+            self.status_label.setStyleSheet(f"color: {COLORS['danger']};")
+        self.close_btn.setEnabled(True)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# VM Control widget (Vagrant-backed)
+# ──────────────────────────────────────────────────────────────────────────────
+
+class VMControl(QFrame):
+    """Individual VM control widget — uses Vagrant for start/stop."""
+
+    def __init__(self, vm_name: str, vm_manager, vagrant_manager=None,
+                 scenario_id: str = None, parent=None):
+        super().__init__(parent)
+        self.vm_name        = vm_name
+        self.vm_manager     = vm_manager       # VBoxManage (status polling)
+        self.vagrant_manager = vagrant_manager  # Vagrant (lifecycle)
+        self.scenario_id    = scenario_id
+        self._busy          = False
+
+        self._signals = _Signals()
+        self._signals.status_changed.connect(self._apply_status)
+        self._signals.output_line.connect(self._on_output)
+        self._signals.operation_done.connect(self._on_done)
+
+        self._output_dialog: VagrantOutputDialog | None = None
 
         self.setup_ui()
 
-    # ------------------------------------------------------------------
-    # UI Construction
-    # ------------------------------------------------------------------
+        self._timer = QTimer()
+        self._timer.timeout.connect(self._poll_status)
+        self._timer.start(5000)
+        self._poll_status()
+
+    # ── UI ────────────────────────────────────────────────────────────
 
     def setup_ui(self):
-        main_container = QHBoxLayout()
-        main_container.setContentsMargins(0, 0, 0, 0)
-        main_container.setSpacing(0)
+        self.setStyleSheet(VM_CONTROL_STYLE)
 
-        # ---- Left panel: scenario list ----
-        left_panel = QWidget()
-        left_panel.setStyleSheet(f"background-color: {COLORS['bg_primary']};")
-        left_layout = QVBoxLayout()
-        left_layout.setContentsMargins(30, 30, 15, 30)
-        left_layout.setSpacing(20)
+        layout = QHBoxLayout()
+        layout.setContentsMargins(15, 12, 15, 12)
+        layout.setSpacing(15)
 
-        header = QLabel("Scenarios")
-        header.setFont(QFont('Arial', 28, QFont.Weight.Bold))
-        header.setStyleSheet(f"color: {COLORS['text_primary']};")
-        left_layout.addWidget(header)
+        self.name_label = QLabel(self.vm_name)
+        self.name_label.setFont(QFont("Arial", 11, QFont.Weight.Bold))
+        self.name_label.setStyleSheet(f"color: {COLORS['text_primary']};")
+        layout.addWidget(self.name_label)
 
-        subtitle = QLabel("Select a scenario to view settings and virtual machines")
-        subtitle.setFont(QFont('Arial', 13))
-        subtitle.setStyleSheet(f"color: {COLORS['text_secondary']};")
-        left_layout.addWidget(subtitle)
+        layout.addStretch()
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.status_label = QLabel("Checking…")
+        self.status_label.setFont(QFont("Arial", 10))
+        self.status_label.setStyleSheet(f"color: {COLORS['text_secondary']};")
+        layout.addWidget(self.status_label)
 
-        scroll_content = QWidget()
-        scroll_layout = QVBoxLayout()
-        scroll_layout.setSpacing(15)
+        # Provision / Up button  (replaces plain "Start")
+        self.start_btn = QPushButton("▶ Start")
+        self.start_btn.setFont(QFont("Arial", 9, QFont.Weight.Bold))
+        self.start_btn.setStyleSheet(START_BUTTON_STYLE)
+        self.start_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.start_btn.clicked.connect(self._start)
+        layout.addWidget(self.start_btn)
 
-        for scenario in self.scenarios:
-            item = ScenarioItem(scenario, self.vm_manager, self)
-            scroll_layout.addWidget(item)
+        self.stop_btn = QPushButton("■ Stop")
+        self.stop_btn.setFont(QFont("Arial", 9, QFont.Weight.Bold))
+        self.stop_btn.setStyleSheet(STOP_BUTTON_STYLE)
+        self.stop_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.stop_btn.clicked.connect(self._stop)
+        layout.addWidget(self.stop_btn)
 
-        scroll_layout.addStretch()
-        scroll_content.setLayout(scroll_layout)
-        scroll.setWidget(scroll_content)
-        left_layout.addWidget(scroll)
+        self.setLayout(layout)
 
-        left_panel.setLayout(left_layout)
-        main_container.addWidget(left_panel, stretch=2)
+    # ── Status polling ────────────────────────────────────────────────
 
-        # ---- Right panel: VM display area ----
-        self.vm_display_area = QFrame()
-        self.vm_display_area.setStyleSheet(VM_DISPLAY_AREA_STYLE)
-
-        self.vm_area_layout = QVBoxLayout()
-        self.vm_area_layout.setContentsMargins(30, 30, 30, 30)
-        self.vm_area_layout.setSpacing(20)
-
-        self._show_placeholder()
-
-        self.vm_display_area.setLayout(self.vm_area_layout)
-        main_container.addWidget(self.vm_display_area, stretch=3)
-
-        self.setLayout(main_container)
-
-    # ------------------------------------------------------------------
-    # Placeholder / clear helpers
-    # ------------------------------------------------------------------
-
-    def _clear_vm_area(self):
-        """Remove every widget from the VM area layout"""
-        while self.vm_area_layout.count():
-            item = self.vm_area_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-
-    def _show_placeholder(self):
-        vm_header = QLabel("VM Display Area")
-        vm_header.setFont(QFont('Arial', 24, QFont.Weight.Bold))
-        vm_header.setStyleSheet(f"color: {COLORS['text_primary']};")
-        self.vm_area_layout.addWidget(vm_header)
-
-        placeholder = QLabel("Select and expand a scenario to control virtual machines")
-        placeholder.setFont(QFont('Arial', 12))
-        placeholder.setStyleSheet(f"color: {COLORS['text_tertiary']};")
-        placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.vm_area_layout.addWidget(placeholder)
-        self.vm_area_layout.addStretch()
-
-    # ------------------------------------------------------------------
-    # Scenario selected
-    # ------------------------------------------------------------------
-
-    def show_scenario_vms(self, scenario):
-        """Populate the right panel when a scenario is expanded"""
-        self.current_scenario = scenario
-        self._clear_vm_area()
-
-        # Scenario title
-        header = QLabel(scenario['name'])
-        header.setFont(QFont('Arial', 22, QFont.Weight.Bold))
-        header.setStyleSheet(f"color: {COLORS['text_primary']};")
-        header.setWordWrap(True)
-        self.vm_area_layout.addWidget(header)
-
-        desc = QLabel(scenario['description'])
-        desc.setFont(QFont('Arial', 12))
-        desc.setStyleSheet(f"color: {COLORS['text_secondary']};")
-        desc.setWordWrap(True)
-        self.vm_area_layout.addWidget(desc)
-
-        # ---- Launch instructions box ----
-        instructions_text = scenario.get('launch_instructions', '')
-        if instructions_text:
-            instr_frame = QFrame()
-            instr_frame.setStyleSheet(f"""
-                QFrame {{
-                    background-color: {COLORS['bg_tertiary']};
-                    border-radius: 8px;
-                    border-left: 4px solid {COLORS['accent_blue']};
-                }}
-            """)
-            instr_layout = QVBoxLayout()
-            instr_layout.setContentsMargins(16, 12, 16, 12)
-            instr_layout.setSpacing(6)
-
-            instr_title = QLabel("📋  What you'll find when the VMs start")
-            instr_title.setFont(QFont('Arial', 11, QFont.Weight.Bold))
-            instr_title.setStyleSheet(f"color: {COLORS['accent_blue']};")
-            instr_layout.addWidget(instr_title)
-
-            instr_body = QLabel(instructions_text)
-            instr_body.setFont(QFont('Courier', 10))
-            instr_body.setStyleSheet(f"color: {COLORS['text_secondary']};")
-            instr_body.setWordWrap(True)
-            instr_layout.addWidget(instr_body)
-
-            instr_frame.setLayout(instr_layout)
-            self.vm_area_layout.addWidget(instr_frame)
-
-        # ---- Snapshot status ----
-        snapshots = scenario.get('snapshots', {})
-        if snapshots:
-            snap_frame = QFrame()
-            snap_frame.setStyleSheet(f"""
-                QFrame {{
-                    background-color: {COLORS['bg_tertiary']};
-                    border-radius: 8px;
-                }}
-            """)
-            snap_layout = QVBoxLayout()
-            snap_layout.setContentsMargins(16, 12, 16, 12)
-            snap_layout.setSpacing(6)
-
-            snap_title = QLabel("💾  Snapshots")
-            snap_title.setFont(QFont('Arial', 11, QFont.Weight.Bold))
-            snap_title.setStyleSheet(f"color: {COLORS['text_primary']};")
-            snap_layout.addWidget(snap_title)
-
-            for vm_name in scenario['vms']:
-                snap_name = snapshots.get(vm_name, None)
-                row = QHBoxLayout()
-
-                vm_lbl = QLabel(vm_name)
-                vm_lbl.setFont(QFont('Arial', 10))
-                vm_lbl.setStyleSheet(f"color: {COLORS['text_secondary']};")
-                row.addWidget(vm_lbl)
-
-                row.addStretch()
-
-                if snap_name:
-                    # Check whether the snapshot actually exists
-                    exists = self.vm_manager.snapshot_exists(vm_name, snap_name)
-                    if exists:
-                        status_lbl = QLabel(f"✅  {snap_name}")
-                        status_lbl.setStyleSheet(f"color: {COLORS['success']};")
-                    else:
-                        status_lbl = QLabel(f"⚠️  {snap_name}  (not found)")
-                        status_lbl.setStyleSheet(f"color: {COLORS['warning']};")
-                else:
-                    status_lbl = QLabel("No snapshot — will start fresh")
-                    status_lbl.setStyleSheet(f"color: {COLORS['text_tertiary']};")
-
-                status_lbl.setFont(QFont('Arial', 10))
-                row.addWidget(status_lbl)
-                snap_layout.addLayout(row)
-
-            snap_frame.setLayout(snap_layout)
-            self.vm_area_layout.addWidget(snap_frame)
-
-        # ---- VM controls (start / stop per VM) ----
-        vm_section_label = QLabel("Virtual Machines")
-        vm_section_label.setFont(QFont('Arial', 18, QFont.Weight.Bold))
-        vm_section_label.setStyleSheet(f"color: {COLORS['text_primary']}; margin-top: 10px;")
-        self.vm_area_layout.addWidget(vm_section_label)
-
-        for vm_name in scenario['vms']:
-            vm_control = VMControl(vm_name, self.vm_manager)
-            self.vm_area_layout.addWidget(vm_control)
-
-        self.vm_area_layout.addStretch()
-
-        # ---- Launch button ----
-        self.launch_btn = QPushButton("🚀  Launch Scenario")
-        self.launch_btn.setFont(QFont('Arial', 13, QFont.Weight.Bold))
-        self.launch_btn.setStyleSheet(LAUNCH_BUTTON_STYLE)
-        self.launch_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.launch_btn.clicked.connect(lambda: self.launch_scenario(scenario))
-        self.launch_btn.setMinimumHeight(52)
-        self.vm_area_layout.addWidget(self.launch_btn)
-
-    def clear_vm_area(self):
-        """Restore the placeholder when a scenario is collapsed"""
-        self.current_scenario = None
-        self._clear_vm_area()
-        self._show_placeholder()
-
-    # ------------------------------------------------------------------
-    # Launch
-    # ------------------------------------------------------------------
-
-    def launch_scenario(self, scenario):
-        """
-        Restore snapshots for each VM in the scenario, then start them.
-        Runs in a background thread to keep the UI responsive.
-        """
-        # Confirmation dialog showing what will happen
-        snapshots = scenario.get('snapshots', {})
-        details_lines = []
-        for vm_name in scenario['vms']:
-            snap = snapshots.get(vm_name)
-            if snap:
-                details_lines.append(f"  • {vm_name}  →  restore snapshot '{snap}', then start")
-            else:
-                details_lines.append(f"  • {vm_name}  →  start (no snapshot configured)")
-
-        details = "\n".join(details_lines)
-        reply = QMessageBox.question(
-            self,
-            "Launch Scenario",
-            f"Ready to launch: {scenario['name']}\n\n{details}\n\n"
-            f"Any running VMs listed above will be force-powered off first.\n"
-            f"Continue?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-        )
-        if reply != QMessageBox.StandardButton.Yes:
+    def _poll_status(self):
+        if self._busy:
             return
 
-        # Disable button to prevent double-clicks
-        self.launch_btn.setEnabled(False)
-        self.launch_btn.setText("Launching…")
-
-        # Progress dialog
-        self._progress = QProgressDialog(
-            f"Launching {scenario['name']}…", None, 0, 0, self
-        )
-        self._progress.setWindowTitle("Launching Scenario")
-        self._progress.setWindowModality(Qt.WindowModality.WindowModal)
-        self._progress.setMinimumDuration(0)
-        self._progress.show()
-
-        # Background worker
-        self._launch_worker = ScenarioLaunchWorker(self.vm_manager, scenario)
-        self._launch_worker.progress.connect(self._on_launch_progress)
-        self._launch_worker.all_done.connect(self._on_launch_done)
-        self._launch_worker.start()
-
-    def _on_launch_progress(self, message):
-        if self._progress:
-            self._progress.setLabelText(message)
-
-    def _on_launch_done(self, results):
-        # Close the progress dialog
-        if self._progress:
-            self._progress.close()
-            self._progress = None
-
-        # Re-enable the launch button
-        self.launch_btn.setEnabled(True)
-        self.launch_btn.setText("🚀  Launch Scenario")
-
-        # Build a summary
-        successes = [vm for vm, ok, _ in results if ok]
-        failures  = [(vm, msg) for vm, ok, msg in results if not ok]
-
-        if not failures:
-            # All good
-            scenario_name = self.current_scenario['name'] if self.current_scenario else "Scenario"
-            instructions = (self.current_scenario or {}).get('launch_instructions', '')
-            msg = f"All VMs launched successfully!\n\n"
-            if instructions:
-                msg += f"📋 What to expect:\n{instructions}"
-            QMessageBox.information(self, f"{scenario_name} — Launched", msg)
+        if self.vagrant_manager and self.scenario_id:
+            state = self.vagrant_manager.get_vm_status(self.scenario_id, self.vm_name)
         else:
-            # At least one failure — show details
-            fail_text = "\n\n".join(
-                f"❌ {vm}:\n{msg}" for vm, msg in failures
+            state = self.vm_manager.get_vm_state(self.vm_name)
+
+        self._signals.status_changed.emit(state)
+
+    def _apply_status(self, state: str):
+        mapping = {
+            "running":     ("● Running",     COLORS["success"],          False, True),
+            "poweroff":    ("● Stopped",     COLORS["text_secondary"],   True,  False),
+            "not created": ("● Not created", COLORS["text_tertiary"],    True,  False),
+            "saved":       ("● Suspended",   COLORS["warning"],          True,  True),
+        }
+        text, color, can_start, can_stop = mapping.get(
+            state, ("● Unknown", COLORS["warning"], True, True)
+        )
+        self.status_label.setText(text)
+        self.status_label.setStyleSheet(f"color: {color}; font-weight: bold;")
+        self.start_btn.setEnabled(can_start and not self._busy)
+        self.stop_btn.setEnabled(can_stop and not self._busy)
+
+    # ── Actions ───────────────────────────────────────────────────────
+
+    def _set_busy(self, busy: bool):
+        self._busy = busy
+        self.start_btn.setEnabled(not busy)
+        self.stop_btn.setEnabled(not busy)
+
+    def _open_output_dialog(self, title: str):
+        self._output_dialog = VagrantOutputDialog(title, self)
+        self._output_dialog.show()
+
+    def _on_output(self, line: str):
+        if self._output_dialog:
+            self._output_dialog.append_line(line)
+
+    def _on_done(self, success: bool):
+        self._set_busy(False)
+        if self._output_dialog:
+            self._output_dialog.mark_done(success)
+        self._poll_status()
+
+    def _start(self):
+        if self._busy:
+            return
+
+        if self.vagrant_manager and self.scenario_id:
+            self._set_busy(True)
+            self._open_output_dialog(f"Starting {self.vm_name}")
+            self.vagrant_manager.up_async(
+                self.scenario_id,
+                self.vm_name,
+                output_cb=lambda line: self._signals.output_line.emit(line),
+                done_cb=lambda ok: self._signals.operation_done.emit(ok),
             )
-            ok_text = ""
-            if successes:
-                ok_text = "✅ Started: " + ", ".join(successes) + "\n\n"
-            QMessageBox.warning(
-                self,
-                "Launch — Partial Failure",
-                f"{ok_text}The following VMs could not be launched:\n\n{fail_text}"
+        else:
+            # Fallback to direct VBoxManage
+            if self.vm_manager.start_vm(self.vm_name):
+                QMessageBox.information(self, "Success",
+                                        f"VM '{self.vm_name}' started successfully!")
+            else:
+                QMessageBox.critical(self, "Error",
+                                     f"Failed to start VM '{self.vm_name}'")
+            self._poll_status()
+
+    def _stop(self):
+        if self._busy:
+            return
+
+        if self.vagrant_manager and self.scenario_id:
+            self._set_busy(True)
+            self._open_output_dialog(f"Stopping {self.vm_name}")
+            self.vagrant_manager.halt_async(
+                self.scenario_id,
+                self.vm_name,
+                output_cb=lambda line: self._signals.output_line.emit(line),
+                done_cb=lambda ok: self._signals.operation_done.emit(ok),
             )
+        else:
+            if self.vm_manager.stop_vm(self.vm_name):
+                QMessageBox.information(self, "Success",
+                                        f"VM '{self.vm_name}' stopped successfully!")
+            else:
+                QMessageBox.critical(self, "Error",
+                                     f"Failed to stop VM '{self.vm_name}'")
+            self._poll_status()
+
+    # ── Cleanup ───────────────────────────────────────────────────────
+
+    def closeEvent(self, event):
+        self._timer.stop()
+        super().closeEvent(event)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Scenario Item (unchanged logic, passes vagrant_manager through)
+# ──────────────────────────────────────────────────────────────────────────────
+
+class ScenarioItem(QFrame):
+    """Expandable scenario item."""
+
+    def __init__(self, scenario, vm_manager, vagrant_manager=None, parent=None):
+        super().__init__(parent)
+        self.scenario        = scenario
+        self.vm_manager      = vm_manager
+        self.vagrant_manager = vagrant_manager
+        self.parent_window   = parent
+        self.is_expanded     = False
+        self.setup_ui()
+
+    def setup_ui(self):
+        self.setFrameStyle(QFrame.Shape.StyledPanel)
+        self.setStyleSheet(SCENARIO_ITEM_STYLE)
+
+        self.main_layout = QVBoxLayout()
+        self.main_layout.setContentsMargins(0, 0, 0, 0)
+        self.main_layout.setSpacing(0)
+
+        # ── Header ────────────────────────────────────────────────────
+        self.header = QFrame()
+        self.header.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.header.setStyleSheet(SCENARIO_HEADER_STYLE)
+
+        header_layout = QHBoxLayout()
+        header_layout.setContentsMargins(20, 15, 20, 15)
+        header_layout.setSpacing(15)
+
+        info_layout = QVBoxLayout()
+        info_layout.setSpacing(6)
+
+        title_row = QHBoxLayout()
+
+        self.arrow_label = QLabel("▶")
+        self.arrow_label.setFont(QFont("Arial", 10))
+        self.arrow_label.setStyleSheet(f"color: {COLORS['text_secondary']};")
+        self.arrow_label.setFixedWidth(20)
+        title_row.addWidget(self.arrow_label)
+
+        title = QLabel(self.scenario["name"])
+        title.setFont(QFont("Arial", 14, QFont.Weight.Bold))
+        title.setStyleSheet(f"color: {COLORS['text_primary']};")
+        title.setWordWrap(True)
+        title_row.addWidget(title)
+
+        title_row.addStretch()
+
+        diff_color = get_difficulty_color(self.scenario["difficulty"])
+        diff_badge = QLabel(self.scenario["difficulty"])
+        diff_badge.setFont(QFont("Arial", 9, QFont.Weight.Bold))
+        diff_badge.setStyleSheet(f"""
+            background-color: {diff_color};
+            color: white;
+            padding: 4px 12px;
+            border-radius: 10px;
+        """)
+        diff_badge.setFixedHeight(24)
+        title_row.addWidget(diff_badge)
+
+        info_layout.addLayout(title_row)
+
+        desc = QLabel(self.scenario["description"])
+        desc.setFont(QFont("Arial", 10))
+        desc.setStyleSheet(f"color: {COLORS['text_secondary']}; margin-left: 20px;")
+        desc.setWordWrap(True)
+        info_layout.addWidget(desc)
+
+        header_layout.addLayout(info_layout)
+        self.header.setLayout(header_layout)
+        self.header.mousePressEvent = lambda e: self.toggle_expanded()
+
+        self.main_layout.addWidget(self.header)
+
+        # ── Expandable content ────────────────────────────────────────
+        self.content_area = QFrame()
+        self.content_area.setStyleSheet(SCENARIO_CONTENT_STYLE)
+
+        content_layout = QVBoxLayout()
+        content_layout.setContentsMargins(20, 15, 20, 20)
+        content_layout.setSpacing(15)
+
+        settings_label = QLabel("Settings")
+        settings_label.setFont(QFont("Arial", 13, QFont.Weight.Bold))
+        settings_label.setStyleSheet(f"color: {COLORS['text_primary']};")
+        content_layout.addWidget(settings_label)
+
+        vm_label = QLabel("Virtual Machines")
+        vm_label.setFont(QFont("Arial", 12, QFont.Weight.Bold))
+        vm_label.setStyleSheet(f"color: {COLORS['text_secondary']};")
+        content_layout.addWidget(vm_label)
+
+        for vm_name in self.scenario["vms"]:
+            row = QHBoxLayout()
+            lbl = QLabel(vm_name)
+            lbl.setFont(QFont("Arial", 11))
+            lbl.setStyleSheet("color: #cbd5e1;")
+            row.addWidget(lbl)
+            row.addStretch()
+            content_layout.addLayout(row)
+
+        self.content_area.setLayout(content_layout)
+        self.content_area.hide()
+
+        self.main_layout.addWidget(self.content_area)
+        self.setLayout(self.main_layout)
+
+    def toggle_expanded(self):
+        self.is_expanded = not self.is_expanded
+
+        if self.is_expanded:
+            self.arrow_label.setText("▼")
+            self.content_area.show()
+            self.setStyleSheet(SCENARIO_ITEM_EXPANDED_STYLE)
+            if self.parent_window:
+                self.parent_window.show_scenario_vms(self.scenario)
+        else:
+            self.arrow_label.setText("▶")
+            self.content_area.hide()
+            self.setStyleSheet(SCENARIO_ITEM_STYLE)
+            if self.parent_window:
+                self.parent_window.clear_vm_area()
