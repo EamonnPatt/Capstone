@@ -1,15 +1,14 @@
-"""
+﻿"""
 Main application window
 """
 
-from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-                              QPushButton, QLabel, QFrame)
+from PyQt6.QtWidgets import QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QFrame
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QFont
+
+import core.database as db
 from core.vm_manager import VMManager
-from core.vagrant_manager import VagrantManager
-from core.data import USER_DATA, SCENARIOS
-from core.progress import load_progress
+from core.data import SCENARIOS
 from UI.scenario_view_v2 import ScenarioView
 from UI.learning_view import LearningView
 from UI.profile_view import ProfileView
@@ -17,70 +16,62 @@ from utils.styles import MAIN_WINDOW_STYLE, NAV_BAR_STYLE, get_nav_button_style,
 
 
 class CyberTrainingApp(QMainWindow):
-    def __init__(self):
+    def __init__(self, user_id: str):
+        """
+        Parameters
+        ----------
+        user_id : the logged-in user's user_id returned by loginUser()
+        """
         super().__init__()
-        self.vm_manager      = VMManager()
-        self.vagrant_manager = VagrantManager()
-        self.user_data    = USER_DATA
-        self.scenarios    = SCENARIOS
-        load_progress(self.user_data)   # restore saved progress on startup
+
+        self.user_id = user_id
+        self.vm_manager = VMManager()
+        self.scenarios = SCENARIOS
         self.current_view = "scenarios"
+
         self.setup_ui()
 
     def setup_ui(self):
         self.setWindowTitle("CyberLab Training Platform")
-        self.setMinimumSize(800, 560)
-        self.resize(1280, 800)
+        self.setMinimumSize(1400, 900)
         self.setStyleSheet(MAIN_WINDOW_STYLE)
+
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
-        main_layout = QVBoxLayout(central_widget)
+
+        main_layout = QVBoxLayout()
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
-        main_layout.addWidget(self._build_nav_bar())
+
+        nav_bar = self._build_nav_bar()
+        main_layout.addWidget(nav_bar)
+
         self.content_area = QWidget()
         self.content_area.setStyleSheet(f"background-color: {COLORS['bg_primary']};")
         main_layout.addWidget(self.content_area)
+
+        central_widget.setLayout(main_layout)
         self.show_scenarios_view()
 
     def _build_nav_bar(self):
         nav_bar = QFrame()
         nav_bar.setStyleSheet(NAV_BAR_STYLE)
-        nav_bar.setFixedHeight(64)
+        nav_bar.setFixedHeight(70)
 
-        layout = QHBoxLayout(nav_bar)
-        layout.setContentsMargins(28, 0, 28, 0)
-        layout.setSpacing(0)
+        layout = QHBoxLayout()
+        layout.setContentsMargins(30, 0, 30, 0)
 
-        # Brand
-        brand_row = QHBoxLayout()
-        brand_row.setSpacing(10)
+        title = QLabel("🛡️ CyberLab Training")
+        title.setFont(QFont('Arial', 18, QFont.Weight.Bold))
+        title.setStyleSheet("color: #f8fafc;")
+        layout.addWidget(title)
 
-        shield = QLabel("🛡")
-        shield.setFont(QFont(FONT, 18))
-        brand_row.addWidget(shield)
-
-        title = QLabel("CyberLab")
-        title.setFont(QFont(FONT, 17, QFont.Weight.Bold))
-        title.setStyleSheet(f"color: {COLORS['text_primary']};")
-        brand_row.addWidget(title)
-
-        subtitle = QLabel("Training Platform")
-        subtitle.setFont(QFont(FONT, 11))
-        subtitle.setStyleSheet(f"color: {COLORS['text_tertiary']};")
-        subtitle.setAlignment(Qt.AlignmentFlag.AlignBottom)
-        brand_row.addWidget(subtitle)
-
-        layout.addLayout(brand_row)
         layout.addStretch()
 
-        # Nav buttons
         self.nav_buttons = {}
-        for text, view in [("Scenarios", "scenarios"),
-                            ("Learning",  "learning"),
-                            ("Profile",   "profile")]:
+        for text, view in [("Scenarios", "scenarios"), ("Learning", "learning"), ("Profile", "profile")]:
             btn = QPushButton(text)
-            btn.setFont(QFont(FONT, 11))
+            btn.setFont(QFont('Arial', 11, QFont.Weight.Medium))
             btn.setStyleSheet(get_nav_button_style(view == self.current_view))
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             btn.clicked.connect(lambda _, v=view: self.switch_view(v))
@@ -89,12 +80,14 @@ class CyberTrainingApp(QMainWindow):
             layout.addWidget(btn)
             self.nav_buttons[view] = btn
 
+        nav_bar.setLayout(layout)
         return nav_bar
 
     def switch_view(self, view):
         self.current_view = view
         for v, btn in self.nav_buttons.items():
             btn.setStyleSheet(get_nav_button_style(v == view))
+
         if view == "scenarios":
             self.show_scenarios_view()
         elif view == "learning":
@@ -102,31 +95,32 @@ class CyberTrainingApp(QMainWindow):
         elif view == "profile":
             self.show_profile_view()
 
-    def _clear_content(self):
+    # ------------------------------------------------------------------
+    # View helpers
+    # ------------------------------------------------------------------
+
+    def _set_content(self, widget):
+        """Replace whatever is in content_area with *widget*."""
         if self.content_area.layout():
-            QWidget().setLayout(self.content_area.layout())
+            old_layout = self.content_area.layout()
+            while old_layout.count():
+                item = old_layout.takeAt(0)
+                if item.widget():
+                    item.widget().deleteLater()
+            QWidget().setLayout(old_layout)
+
+        layout = QVBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(widget)
+        self.content_area.setLayout(layout)
 
     def show_scenarios_view(self):
-        self._clear_content()
-        view = ScenarioView(self.scenarios, self.vm_manager, self.user_data,
-                            vagrant_manager=self.vagrant_manager)
-        layout = QVBoxLayout(self.content_area)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
-        layout.addWidget(view)
+        user = db.getUser(self.user_id)
+        self._set_content(ScenarioView(self.scenarios, self.vm_manager, user))
 
     def show_learning_view(self):
-        self._clear_content()
-        view = LearningView()
-        layout = QVBoxLayout(self.content_area)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
-        layout.addWidget(view)
+        self._set_content(LearningView())
 
     def show_profile_view(self):
-        self._clear_content()
-        view = ProfileView(self.user_data, self.scenarios)
-        layout = QVBoxLayout(self.content_area)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
-        layout.addWidget(view)
+        # Re-fetches from MongoDB each time so changes are always current
+        self._set_content(ProfileView(self.user_id, self.scenarios))

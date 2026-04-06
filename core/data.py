@@ -1,24 +1,11 @@
 """
-Data module - Stores scenarios, user data, and snapshot mappings
+Data module - Stores scenarios and learning modules.
+User profile data is now managed by core/database.py (cyberlab.db).
 """
-
-# User data
-USER_DATA = {
-    'username': 'CyberStudent',
-    'completed_scenarios': ['beginner-1'],
-    'learning_modules_completed': 3
-}
 
 # Scenarios data
 # Each VM entry in 'snapshots' maps a VM name to the VirtualBox snapshot name
 # that should be restored when launching that scenario.
-# Snapshot names must exactly match what you named them in VirtualBox.
-#
-# One-time setup per scenario:
-#   1. Boot the base VM
-#   2. Configure the desired state (open apps, position windows, etc.)
-#   3. Run: VBoxManage snapshot "<VMName>" take "<snapshot-name>" --pause
-#   4. Add that snapshot name here
 SCENARIOS = [
     {
         'id': 'beginner-1',
@@ -27,12 +14,7 @@ SCENARIOS = [
         'description': 'Learn fundamental command line operations in a Linux environment. '
                        'A terminal is pre-opened with a practice directory ready to go.',
         'vms': ['Linux Kali'],
-        # VirtualBox VM names as set by vb.name in each Vagrantfile
-        'vbox_names': {
-            'Linux Kali': 'cyberlab-beginner1-kali',
-        },
         'snapshots': {
-            # Kali boots with a terminal open in ~/practice, ls output visible
             'Linux Kali': 'scenario-cmdline-kali',
         },
         'launch_instructions': (
@@ -51,11 +33,7 @@ SCENARIOS = [
         'description': 'Explore basic networking concepts. '
                        'Wireshark and a terminal are ready to capture traffic.',
         'vms': ['Linux Ubuntu'],
-        'vbox_names': {
-            'Linux Ubuntu': 'cyberlab-beginner2-ubuntu',
-        },
         'snapshots': {
-            # Ubuntu boots with Wireshark open and a terminal showing ifconfig
             'Linux Ubuntu': 'scenario-networking-ubuntu',
         },
         'launch_instructions': (
@@ -76,14 +54,8 @@ SCENARIOS = [
                        'A vulnerable web app (DVWA) is running on Windows, '
                        'and Kali has Burp Suite open and pointed at it.',
         'vms': ['Windows 11', 'Linux Kali'],
-        'vbox_names': {
-            'Windows 11': 'cyberlab-intermediate1-windows11',
-            'Linux Kali': 'cyberlab-intermediate1-kali',
-        },
         'snapshots': {
-            # Windows 11: DVWA running in Chrome at http://localhost/dvwa
             'Windows 11':  'scenario-webapp-win11',
-            # Kali: Burp Suite open, browser proxy configured to 127.0.0.1:8080
             'Linux Kali':  'scenario-webapp-kali',
         },
         'launch_instructions': (
@@ -102,14 +74,8 @@ SCENARIOS = [
         'description': 'Learn password attack techniques using Hashcat and John the Ripper. '
                        'A set of hashed passwords is waiting in ~/hashes.',
         'vms': ['Linux Kali', 'Linux Ubuntu'],
-        'vbox_names': {
-            'Linux Kali':   'cyberlab-intermediate2-kali',
-            'Linux Ubuntu': 'cyberlab-intermediate2-ubuntu',
-        },
         'snapshots': {
-            # Kali: terminal open in ~/hashes, hashcat and john installed, wordlists in ~/wordlists
             'Linux Kali':    'scenario-passwords-kali',
-            # Ubuntu: SSH server running with a locked user account for practice
             'Linux Ubuntu':  'scenario-passwords-ubuntu',
         },
         'launch_instructions': (
@@ -129,17 +95,9 @@ SCENARIOS = [
                        'A deliberately vulnerable target (Metasploitable) is running on Ubuntu, '
                        'and Kali has msfconsole pre-loaded.',
         'vms': ['Windows 11', 'Linux Kali', 'Linux Ubuntu'],
-        'vbox_names': {
-            'Windows 11':   'cyberlab-hard1-windows11',
-            'Linux Kali':   'cyberlab-hard1-kali',
-            'Linux Ubuntu': 'cyberlab-hard1-ubuntu',
-        },
         'snapshots': {
-            # Windows 11: vulnerable SMB service running (EternalBlue practice)
             'Windows 11':    'scenario-msf-win11',
-            # Kali: msfconsole open, db connected, target IPs noted in /root/targets.txt
             'Linux Kali':    'scenario-msf-kali',
-            # Ubuntu: Metasploitable services running (vsftpd, distcc, etc.)
             'Linux Ubuntu':  'scenario-msf-ubuntu',
         },
         'launch_instructions': (
