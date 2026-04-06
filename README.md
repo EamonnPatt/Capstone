@@ -124,10 +124,3 @@ VBoxManage snapshot "cyberlab-hard1-ubuntu" take "scenario-msf-ubuntu" --pause
 
 
 
-add a score taker where the user can add the "flag" from the scenario to test if they got it right and if they did they "complete" the scenario and it gets saved to their profile. 
-
-add the ability to go fullscreen on just the vm
-
-add the snapshots for the rest of the scenarios
-
-integrate joels code
