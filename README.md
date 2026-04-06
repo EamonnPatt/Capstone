@@ -92,3 +92,27 @@ Network layout
 Each scenario uses an isolated private network so VMs can reach each other
 but are isolated from other scenarios.
 ScenarioNetworkIPs assignedbeginner-1192.168.56.0/24Kali .10beginner-2192.168.56.0/24Ubuntu .20intermediate-1192.168.57.0/24Kali .10, Win11 .20intermediate-2192.168.58.0/24Kali .10, Ubuntu .20hard-1192.168.59.0/24Kali .10, Ubuntu .20, Win11 .30
+
+
+
+
+
+
+# beginner-1
+VBoxManage snapshot "cyberlab-beginner1-kali" take "scenario-cmdline-kali" --pause
+
+# beginner-2
+VBoxManage snapshot "cyberlab-beginner2-ubuntu" take "scenario-networking-ubuntu" --pause
+
+# intermediate-1
+VBoxManage snapshot "cyberlab-intermediate1-windows11" take "scenario-webapp-win11" --pause
+VBoxManage snapshot "cyberlab-intermediate1-kali" take "scenario-webapp-kali" --pause
+
+# intermediate-2
+VBoxManage snapshot "cyberlab-intermediate2-kali" take "scenario-passwords-kali" --pause
+VBoxManage snapshot "cyberlab-intermediate2-ubuntu" take "scenario-passwords-ubuntu" --pause
+
+# hard-1
+VBoxManage snapshot "cyberlab-hard1-windows11" take "scenario-msf-win11" --pause
+VBoxManage snapshot "cyberlab-hard1-kali" take "scenario-msf-kali" --pause
+VBoxManage snapshot "cyberlab-hard1-ubuntu" take "scenario-msf-ubuntu" --pause

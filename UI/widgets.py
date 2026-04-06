@@ -1,6 +1,8 @@
 """
-Reusable UI widgets — Vagrant-integrated VM controls
+Reusable UI widgets - Vagrant-integrated VM controls
 """
+
+import threading
 
 from PyQt6.QtWidgets import (QFrame, QVBoxLayout, QHBoxLayout, QLabel,
                               QPushButton, QMessageBox, QApplication,
@@ -13,23 +15,13 @@ from utils.styles import (VM_CONTROL_STYLE, START_BUTTON_STYLE, STOP_BUTTON_STYL
 from core.data import get_difficulty_color
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Signal bridge — lets worker threads safely update Qt widgets
-# ──────────────────────────────────────────────────────────────────────────────
-
 class _Signals(QObject):
-    output_line  = pyqtSignal(str)
+    output_line    = pyqtSignal(str)
     operation_done = pyqtSignal(bool)
     status_changed = pyqtSignal(str)
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Vagrant output dialog
-# ──────────────────────────────────────────────────────────────────────────────
-
 class VagrantOutputDialog(QDialog):
-    """Floating terminal-style window that streams vagrant output."""
-
     def __init__(self, title: str, parent=None):
         super().__init__(parent)
         self.setWindowTitle(title)
@@ -53,7 +45,7 @@ class VagrantOutputDialog(QDialog):
         """)
         layout.addWidget(self.log)
 
-        self.status_label = QLabel("Running…")
+        self.status_label = QLabel("Running...")
         self.status_label.setFont(QFont("Arial", 10))
         self.status_label.setStyleSheet(f"color: {COLORS['text_secondary']};")
         layout.addWidget(self.status_label)
@@ -67,15 +59,10 @@ class VagrantOutputDialog(QDialog):
                 color: {COLORS['text_primary']};
                 border: none; border-radius: 6px; padding: 8px 20px;
             }}
-            QPushButton:enabled:hover {{
-                background-color: {COLORS['border_hover']};
-            }}
-            QPushButton:disabled {{
-                color: {COLORS['text_tertiary']};
-            }}
+            QPushButton:enabled:hover {{ background-color: {COLORS['border_hover']}; }}
+            QPushButton:disabled {{ color: {COLORS['text_tertiary']}; }}
         """)
         layout.addWidget(self.close_btn, alignment=Qt.AlignmentFlag.AlignRight)
-
         self.setLayout(layout)
 
     def append_line(self, line: str):
@@ -84,36 +71,31 @@ class VagrantOutputDialog(QDialog):
 
     def mark_done(self, success: bool):
         if success:
-            self.status_label.setText("✅  Done")
+            self.status_label.setText("Done")
             self.status_label.setStyleSheet(f"color: {COLORS['success']};")
         else:
-            self.status_label.setText("❌  Failed — check output above")
+            self.status_label.setText("Failed - check output above")
             self.status_label.setStyleSheet(f"color: {COLORS['danger']};")
         self.close_btn.setEnabled(True)
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# VM Control widget (Vagrant-backed)
-# ──────────────────────────────────────────────────────────────────────────────
-
 class VMControl(QFrame):
-    """Individual VM control widget — uses Vagrant for start/stop."""
-
     def __init__(self, vm_name: str, vm_manager, vagrant_manager=None,
-                 scenario_id: str = None, parent=None):
+                 scenario_id: str = None, scenario: dict = None, parent=None):
         super().__init__(parent)
-        self.vm_name        = vm_name
-        self.vm_manager     = vm_manager       # VBoxManage (status polling)
-        self.vagrant_manager = vagrant_manager  # Vagrant (lifecycle)
-        self.scenario_id    = scenario_id
-        self._busy          = False
+        self.vm_name         = vm_name
+        self.vm_manager      = vm_manager
+        self.vagrant_manager = vagrant_manager
+        self.scenario_id     = scenario_id
+        self.scenario        = scenario  # full scenario dict for vbox_names/snapshots
+        self._busy           = False
+        self._polling        = False
 
         self._signals = _Signals()
         self._signals.status_changed.connect(self._apply_status)
         self._signals.output_line.connect(self._on_output)
         self._signals.operation_done.connect(self._on_done)
-
-        self._output_dialog: VagrantOutputDialog | None = None
+        self._output_dialog = None
 
         self.setup_ui()
 
@@ -122,11 +104,8 @@ class VMControl(QFrame):
         self._timer.start(5000)
         self._poll_status()
 
-    # ── UI ────────────────────────────────────────────────────────────
-
     def setup_ui(self):
         self.setStyleSheet(VM_CONTROL_STYLE)
-
         layout = QHBoxLayout()
         layout.setContentsMargins(15, 12, 15, 12)
         layout.setSpacing(15)
@@ -135,23 +114,21 @@ class VMControl(QFrame):
         self.name_label.setFont(QFont("Arial", 11, QFont.Weight.Bold))
         self.name_label.setStyleSheet(f"color: {COLORS['text_primary']};")
         layout.addWidget(self.name_label)
-
         layout.addStretch()
 
-        self.status_label = QLabel("Checking…")
+        self.status_label = QLabel("Checking...")
         self.status_label.setFont(QFont("Arial", 10))
         self.status_label.setStyleSheet(f"color: {COLORS['text_secondary']};")
         layout.addWidget(self.status_label)
 
-        # Provision / Up button  (replaces plain "Start")
-        self.start_btn = QPushButton("▶ Start")
+        self.start_btn = QPushButton("Start")
         self.start_btn.setFont(QFont("Arial", 9, QFont.Weight.Bold))
         self.start_btn.setStyleSheet(START_BUTTON_STYLE)
         self.start_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.start_btn.clicked.connect(self._start)
         layout.addWidget(self.start_btn)
 
-        self.stop_btn = QPushButton("■ Stop")
+        self.stop_btn = QPushButton("Stop")
         self.stop_btn.setFont(QFont("Arial", 9, QFont.Weight.Bold))
         self.stop_btn.setStyleSheet(STOP_BUTTON_STYLE)
         self.stop_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -160,44 +137,62 @@ class VMControl(QFrame):
 
         self.setLayout(layout)
 
-    # ── Status polling ────────────────────────────────────────────────
+    def _vbox_name(self):
+        """Return the VirtualBox VM name for this control, or None if not mapped."""
+        if self.scenario:
+            return self.scenario.get('vbox_names', {}).get(self.vm_name)
+        return None
+
+    def _snapshot_name(self):
+        """Return the scenario snapshot name for this VM, or None."""
+        if self.scenario:
+            return self.scenario.get('snapshots', {}).get(self.vm_name)
+        return None
 
     def _poll_status(self):
-        if self._busy:
+        if self._busy or self._polling:
             return
+        self._polling = True
 
-        if self.vagrant_manager and self.scenario_id:
-            state = self.vagrant_manager.get_vm_status(self.scenario_id, self.vm_name)
-        else:
-            state = self.vm_manager.get_vm_state(self.vm_name)
+        vbox_name = self._vbox_name()
 
-        self._signals.status_changed.emit(state)
+        def _worker():
+            try:
+                if vbox_name:
+                    # Fast path: query VirtualBox directly instead of running vagrant status
+                    state = self.vm_manager.get_vm_state(vbox_name)
+                    if state == "unknown":
+                        # VM not registered in VirtualBox yet — needs provisioning
+                        state = "not created"
+                elif self.vagrant_manager and self.scenario_id:
+                    state = self.vagrant_manager.get_vm_status(self.scenario_id, self.vm_name)
+                else:
+                    state = self.vm_manager.get_vm_state(self.vm_name)
+                self._signals.status_changed.emit(state)
+            finally:
+                self._polling = False
+
+        threading.Thread(target=_worker, daemon=True).start()
 
     def _apply_status(self, state: str):
         mapping = {
-            "running":     ("● Running",     COLORS["success"],          False, True),
-            "poweroff":    ("● Stopped",     COLORS["text_secondary"],   True,  False),
-            "not created": ("● Not created", COLORS["text_tertiary"],    True,  False),
-            "saved":       ("● Suspended",   COLORS["warning"],          True,  True),
+            "running":     ("Running",      COLORS["success"],        False, True),
+            "poweroff":    ("Stopped",      COLORS["text_secondary"], True,  False),
+            "not created": ("Not created",  COLORS["text_tertiary"],  True,  False),
+            "saved":       ("Suspended",    COLORS["warning"],        True,  True),
         }
         text, color, can_start, can_stop = mapping.get(
-            state, ("● Unknown", COLORS["warning"], True, True)
+            state, ("Unknown", COLORS["warning"], True, True)
         )
-        self.status_label.setText(text)
+        self.status_label.setText(f"● {text}")
         self.status_label.setStyleSheet(f"color: {color}; font-weight: bold;")
         self.start_btn.setEnabled(can_start and not self._busy)
         self.stop_btn.setEnabled(can_stop and not self._busy)
-
-    # ── Actions ───────────────────────────────────────────────────────
 
     def _set_busy(self, busy: bool):
         self._busy = busy
         self.start_btn.setEnabled(not busy)
         self.stop_btn.setEnabled(not busy)
-
-    def _open_output_dialog(self, title: str):
-        self._output_dialog = VagrantOutputDialog(title, self)
-        self._output_dialog.show()
 
     def _on_output(self, line: str):
         if self._output_dialog:
@@ -213,9 +208,34 @@ class VMControl(QFrame):
         if self._busy:
             return
 
-        if self.vagrant_manager and self.scenario_id:
+        vbox_name     = self._vbox_name()
+        snapshot_name = self._snapshot_name()
+
+        # Fast path: VM already exists in VirtualBox — restore snapshot and start
+        if vbox_name and self.vm_manager.vm_exists(vbox_name):
             self._set_busy(True)
-            self._open_output_dialog(f"Starting {self.vm_name}")
+
+            def _launch():
+                success, msg = self.vm_manager.launch_scenario_vm(vbox_name, snapshot_name)
+                if not success:
+                    print(f"[VMControl] launch failed: {msg}")
+                self._signals.operation_done.emit(success)
+
+            threading.Thread(target=_launch, daemon=True).start()
+            return
+
+        # Slow path: VM not yet created — provision with Vagrant (first time only)
+        if self.vagrant_manager and self.scenario_id:
+            from UI.vm_storage_dialog import VMStorageDialog
+            scenario_name = self.scenario.get("name") if self.scenario else None
+            if not VMStorageDialog.ensure_configured(self, scenario_name=scenario_name):
+                return
+
+            self._set_busy(True)
+            self._output_dialog = VagrantOutputDialog(
+                f"Provisioning {self.vm_name} (first-time setup)", self
+            )
+            self._output_dialog.show()
             self.vagrant_manager.up_async(
                 self.scenario_id,
                 self.vm_name,
@@ -223,13 +243,10 @@ class VMControl(QFrame):
                 done_cb=lambda ok: self._signals.operation_done.emit(ok),
             )
         else:
-            # Fallback to direct VBoxManage
             if self.vm_manager.start_vm(self.vm_name):
-                QMessageBox.information(self, "Success",
-                                        f"VM '{self.vm_name}' started successfully!")
+                QMessageBox.information(self, "Success", f"VM '{self.vm_name}' started!")
             else:
-                QMessageBox.critical(self, "Error",
-                                     f"Failed to start VM '{self.vm_name}'")
+                QMessageBox.critical(self, "Error", f"Failed to start '{self.vm_name}'")
             self._poll_status()
 
     def _stop(self):
@@ -238,7 +255,8 @@ class VMControl(QFrame):
 
         if self.vagrant_manager and self.scenario_id:
             self._set_busy(True)
-            self._open_output_dialog(f"Stopping {self.vm_name}")
+            self._output_dialog = VagrantOutputDialog(f"Stopping {self.vm_name}", self)
+            self._output_dialog.show()
             self.vagrant_manager.halt_async(
                 self.scenario_id,
                 self.vm_name,
@@ -247,27 +265,17 @@ class VMControl(QFrame):
             )
         else:
             if self.vm_manager.stop_vm(self.vm_name):
-                QMessageBox.information(self, "Success",
-                                        f"VM '{self.vm_name}' stopped successfully!")
+                QMessageBox.information(self, "Success", f"VM '{self.vm_name}' stopped!")
             else:
-                QMessageBox.critical(self, "Error",
-                                     f"Failed to stop VM '{self.vm_name}'")
+                QMessageBox.critical(self, "Error", f"Failed to stop '{self.vm_name}'")
             self._poll_status()
-
-    # ── Cleanup ───────────────────────────────────────────────────────
 
     def closeEvent(self, event):
         self._timer.stop()
         super().closeEvent(event)
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Scenario Item (unchanged logic, passes vagrant_manager through)
-# ──────────────────────────────────────────────────────────────────────────────
-
 class ScenarioItem(QFrame):
-    """Expandable scenario item."""
-
     def __init__(self, scenario, vm_manager, vagrant_manager=None, parent=None):
         super().__init__(parent)
         self.scenario        = scenario
@@ -285,7 +293,6 @@ class ScenarioItem(QFrame):
         self.main_layout.setContentsMargins(0, 0, 0, 0)
         self.main_layout.setSpacing(0)
 
-        # ── Header ────────────────────────────────────────────────────
         self.header = QFrame()
         self.header.setCursor(Qt.CursorShape.PointingHandCursor)
         self.header.setStyleSheet(SCENARIO_HEADER_STYLE)
@@ -310,7 +317,6 @@ class ScenarioItem(QFrame):
         title.setStyleSheet(f"color: {COLORS['text_primary']};")
         title.setWordWrap(True)
         title_row.addWidget(title)
-
         title_row.addStretch()
 
         diff_color = get_difficulty_color(self.scenario["difficulty"])
@@ -336,10 +342,8 @@ class ScenarioItem(QFrame):
         header_layout.addLayout(info_layout)
         self.header.setLayout(header_layout)
         self.header.mousePressEvent = lambda e: self.toggle_expanded()
-
         self.main_layout.addWidget(self.header)
 
-        # ── Expandable content ────────────────────────────────────────
         self.content_area = QFrame()
         self.content_area.setStyleSheet(SCENARIO_CONTENT_STYLE)
 
@@ -368,13 +372,11 @@ class ScenarioItem(QFrame):
 
         self.content_area.setLayout(content_layout)
         self.content_area.hide()
-
         self.main_layout.addWidget(self.content_area)
         self.setLayout(self.main_layout)
 
     def toggle_expanded(self):
         self.is_expanded = not self.is_expanded
-
         if self.is_expanded:
             self.arrow_label.setText("▼")
             self.content_area.show()

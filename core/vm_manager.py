@@ -6,6 +6,37 @@ import subprocess
 import platform
 import time
 
+from PyQt6.QtCore import QThread, pyqtSignal
+
+
+class VMStatePoller(QThread):
+    state_ready = pyqtSignal(str)
+
+    def __init__(self, vm_manager, vm_name: str, parent=None):
+        super().__init__(parent)
+        self._vm_manager = vm_manager
+        self._vm_name    = vm_name
+
+    def run(self):
+        state = self._vm_manager.get_vm_state(self._vm_name)
+        self.state_ready.emit(state)
+
+
+class VMWorker(QThread):
+    finished = pyqtSignal(bool, str)   # success, message
+
+    def __init__(self, fn, parent=None):
+        super().__init__(parent)
+        self._fn = fn
+
+    def run(self):
+        try:
+            ok  = self._fn()
+            msg = "OK" if ok else "Operation failed"
+            self.finished.emit(bool(ok), msg)
+        except Exception as e:
+            self.finished.emit(False, str(e))
+
 
 class VMManager:
     """Manages virtual machine operations using VirtualBox"""
@@ -341,3 +372,20 @@ class VMManager:
             results.append((vm_name, success, message))
 
         return results
+
+    # ------------------------------------------------------------------
+    # Async helpers (return QThread subclasses — caller must .start())
+    # ------------------------------------------------------------------
+
+    def poll_state_async(self, vm_name: str) -> VMStatePoller:
+        return VMStatePoller(self, vm_name)
+
+    def start_vm_async(self, vm_name: str, headless: bool = False) -> VMWorker:
+        return VMWorker(lambda: self.start_vm(vm_name, headless=headless))
+
+    def stop_vm_async(self, vm_name: str, force: bool = True) -> VMWorker:
+        return VMWorker(lambda: self.stop_vm(vm_name, force=force))
+
+    def resolve_vm_name(self, name: str) -> str:
+        """Return the VirtualBox-registered name for a given name (identity here)."""
+        return name
