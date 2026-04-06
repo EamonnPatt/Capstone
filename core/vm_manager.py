@@ -389,3 +389,32 @@ class VMManager:
     def resolve_vm_name(self, name: str) -> str:
         """Return the VirtualBox-registered name for a given name (identity here)."""
         return name
+
+    def delete_vm(self, vm_name: str) -> tuple[bool, str]:
+        """
+        Unregister and delete all files for a VM.
+        The VM must be powered off before calling this.
+        Returns (success, message).
+        """
+        # Power off first if still running
+        state = self.get_vm_state(vm_name)
+        if state in ("running", "paused", "saved"):
+            self.stop_vm(vm_name, force=True)
+            time.sleep(3)
+
+        try:
+            result = subprocess.run(
+                [self.vbox_manage, "unregistervm", vm_name, "--delete"],
+                capture_output=True, text=True, timeout=60
+            )
+            if result.returncode != 0:
+                msg = f"Failed to delete VM '{vm_name}': {result.stderr.strip()}"
+                print(msg)
+                return False, msg
+            print(f"VM '{vm_name}' deleted.")
+            return True, f"VM '{vm_name}' deleted."
+        except Exception as e:
+            return False, str(e)
+
+    def delete_vm_async(self, vm_name: str) -> "VMWorker":
+        return VMWorker(lambda: self.delete_vm(vm_name)[0])

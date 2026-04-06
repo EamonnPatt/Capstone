@@ -389,6 +389,7 @@ class VMEmbedWidget(QFrame):
         self._embed_btn     = _btn("Embed",      _BAR_BTN_STYLE,     self._on_embed)
         self._popout_btn    = _btn("Pop Out",    _BAR_BTN_STYLE,     self._on_popout)
         self._stop_btn      = _btn("Stop",       STOP_BUTTON_STYLE,  self._on_stop)
+        self._delete_btn    = _btn("Delete VM",  STOP_BUTTON_STYLE,  self._on_delete)
 
         # Always-visible utility buttons (not toggled by _set_state)
         _sep = QLabel("|")
@@ -554,6 +555,36 @@ class VMEmbedWidget(QFrame):
         worker.finished.connect(lambda ok, _: self._set_state("stopped"))
         worker.start()
 
+    def _on_delete(self):
+        from PyQt6.QtWidgets import QMessageBox
+        reply = QMessageBox.warning(
+            self,
+            "Delete VM",
+            f"Permanently delete '{self.display_name}'?\n\n"
+            "This will remove the VM and all its files from disk.\n"
+            "You will need to run Provision again to use this VM.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        self._set_state("stopping")
+        self._placeholder.setText(f"Deleting {self.display_name}…")
+
+        worker = self.vm_manager.delete_vm_async(self.vbox_name)
+        self._worker = worker
+
+        def _done(ok: bool, msg: str):
+            if ok:
+                self._set_state("not_created")
+            else:
+                self._placeholder.setText(f"Failed to delete VM:\n{msg}")
+                self._set_state("stopped")
+
+        worker.finished.connect(_done)
+        worker.start()
+
     # ------------------------------------------------------------------
     # Fullscreen & help
     # ------------------------------------------------------------------
@@ -643,7 +674,7 @@ class VMEmbedWidget(QFrame):
         self._state = state
 
         for btn in (self._provision_btn, self._start_btn, self._embed_btn,
-                    self._popout_btn, self._stop_btn):
+                    self._popout_btn, self._stop_btn, self._delete_btn):
             btn.hide()
 
         if state == "not_created":
@@ -657,6 +688,7 @@ class VMEmbedWidget(QFrame):
                 f"{self.display_name}\n\nVM is stopped.\nPress Start to launch."
             )
             self._start_btn.show()
+            self._delete_btn.show()
 
         elif state in ("starting", "stopping"):
             pass  # caller sets placeholder text
