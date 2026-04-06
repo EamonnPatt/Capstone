@@ -180,6 +180,15 @@ EOF
       chown -R vagrant:vagrant /home/vagrant/Desktop
       chown -R vagrant:vagrant /home/vagrant/practice
 
+      # ── Scenario completion flag ──────────────────────────────────────
+      # Accessible two ways:
+      #   1. curl http://localhost:8080/flag.txt          (HTTP exercise)
+      #   2. cat /home/vagrant/practice/.network_flag    (hidden file)
+      echo "Flag: NET-FUND-COMPLETE" > /home/vagrant/practice/flag.txt
+      echo "Flag: NET-FUND-COMPLETE" > /home/vagrant/practice/.network_flag
+      chown vagrant:vagrant /home/vagrant/practice/flag.txt
+      chown vagrant:vagrant /home/vagrant/practice/.network_flag
+
       echo "[cyberlab] beginner-2 provisioning complete."
       echo "[cyberlab] HTTP server running on :8080"
       echo "[cyberlab] Snapshot reminder: boot the VM, open Wireshark,"

@@ -6,7 +6,7 @@ from UI.main_window import CyberTrainingApp
 
 def main():
     app = QApplication(sys.argv)
-    app.setFont(QFont("Arial", 10))
+    app.setFont(QFont("Segoe UI", 10))
     window = CyberTrainingApp()
     window.show()
     sys.exit(app.exec())

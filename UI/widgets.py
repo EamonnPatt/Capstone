@@ -11,7 +11,7 @@ from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject
 from PyQt6.QtGui import QFont, QTextCursor
 from utils.styles import (VM_CONTROL_STYLE, START_BUTTON_STYLE, STOP_BUTTON_STYLE,
                            SCENARIO_ITEM_STYLE, SCENARIO_ITEM_EXPANDED_STYLE,
-                           SCENARIO_HEADER_STYLE, SCENARIO_CONTENT_STYLE, COLORS)
+                           SCENARIO_HEADER_STYLE, SCENARIO_CONTENT_STYLE, COLORS, FONT)
 from core.data import get_difficulty_color
 
 
@@ -111,25 +111,25 @@ class VMControl(QFrame):
         layout.setSpacing(15)
 
         self.name_label = QLabel(self.vm_name)
-        self.name_label.setFont(QFont("Arial", 11, QFont.Weight.Bold))
+        self.name_label.setFont(QFont(FONT, 11, QFont.Weight.Bold))
         self.name_label.setStyleSheet(f"color: {COLORS['text_primary']};")
         layout.addWidget(self.name_label)
         layout.addStretch()
 
         self.status_label = QLabel("Checking...")
-        self.status_label.setFont(QFont("Arial", 10))
+        self.status_label.setFont(QFont(FONT, 10))
         self.status_label.setStyleSheet(f"color: {COLORS['text_secondary']};")
         layout.addWidget(self.status_label)
 
         self.start_btn = QPushButton("Start")
-        self.start_btn.setFont(QFont("Arial", 9, QFont.Weight.Bold))
+        self.start_btn.setFont(QFont(FONT, 9, QFont.Weight.Bold))
         self.start_btn.setStyleSheet(START_BUTTON_STYLE)
         self.start_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.start_btn.clicked.connect(self._start)
         layout.addWidget(self.start_btn)
 
         self.stop_btn = QPushButton("Stop")
-        self.stop_btn.setFont(QFont("Arial", 9, QFont.Weight.Bold))
+        self.stop_btn.setFont(QFont(FONT, 9, QFont.Weight.Bold))
         self.stop_btn.setStyleSheet(STOP_BUTTON_STYLE)
         self.stop_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.stop_btn.clicked.connect(self._stop)
@@ -276,11 +276,13 @@ class VMControl(QFrame):
 
 
 class ScenarioItem(QFrame):
-    def __init__(self, scenario, vm_manager, vagrant_manager=None, parent=None):
+    def __init__(self, scenario, vm_manager, vagrant_manager=None,
+                 user_data=None, parent=None):
         super().__init__(parent)
         self.scenario        = scenario
         self.vm_manager      = vm_manager
         self.vagrant_manager = vagrant_manager
+        self.user_data       = user_data or {}
         self.parent_window   = parent
         self.is_expanded     = False
         self.setup_ui()
@@ -306,36 +308,51 @@ class ScenarioItem(QFrame):
 
         title_row = QHBoxLayout()
 
-        self.arrow_label = QLabel("▶")
-        self.arrow_label.setFont(QFont("Arial", 10))
-        self.arrow_label.setStyleSheet(f"color: {COLORS['text_secondary']};")
-        self.arrow_label.setFixedWidth(20)
+        self.arrow_label = QLabel("›")
+        self.arrow_label.setFont(QFont(FONT, 14, QFont.Weight.Bold))
+        self.arrow_label.setStyleSheet(f"color: {COLORS['text_tertiary']};")
+        self.arrow_label.setFixedWidth(18)
         title_row.addWidget(self.arrow_label)
 
         title = QLabel(self.scenario["name"])
-        title.setFont(QFont("Arial", 14, QFont.Weight.Bold))
+        title.setFont(QFont(FONT, 13, QFont.Weight.Bold))
         title.setStyleSheet(f"color: {COLORS['text_primary']};")
-        title.setWordWrap(True)
+        title.setWordWrap(False)
         title_row.addWidget(title)
         title_row.addStretch()
 
         diff_color = get_difficulty_color(self.scenario["difficulty"])
         diff_badge = QLabel(self.scenario["difficulty"])
-        diff_badge.setFont(QFont("Arial", 9, QFont.Weight.Bold))
+        diff_badge.setFont(QFont(FONT, 8, QFont.Weight.Bold))
         diff_badge.setStyleSheet(f"""
-            background-color: {diff_color};
-            color: white;
-            padding: 4px 12px;
-            border-radius: 10px;
+            background-color: {diff_color}33;
+            color: {diff_color};
+            border: 1px solid {diff_color}66;
+            padding: 3px 10px;
+            border-radius: 8px;
         """)
-        diff_badge.setFixedHeight(24)
+        diff_badge.setFixedHeight(22)
         title_row.addWidget(diff_badge)
+
+        # Completion badge — shown when the scenario is in completed_scenarios
+        self.complete_badge = QLabel("✓")
+        self.complete_badge.setFont(QFont(FONT, 9, QFont.Weight.Bold))
+        self.complete_badge.setFixedSize(22, 22)
+        self.complete_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.complete_badge.setStyleSheet(f"""
+            background-color: {COLORS['success']}22;
+            color: {COLORS['success']};
+            border: 1px solid {COLORS['success']}55;
+            border-radius: 11px;
+        """)
+        title_row.addWidget(self.complete_badge)
+        self._refresh_badge()
 
         info_layout.addLayout(title_row)
 
         desc = QLabel(self.scenario["description"])
-        desc.setFont(QFont("Arial", 10))
-        desc.setStyleSheet(f"color: {COLORS['text_secondary']}; margin-left: 20px;")
+        desc.setFont(QFont(FONT, 10))
+        desc.setStyleSheet(f"color: {COLORS['text_secondary']}; margin-left: 18px;")
         desc.setWordWrap(True)
         info_layout.addWidget(desc)
 
@@ -351,21 +368,21 @@ class ScenarioItem(QFrame):
         content_layout.setContentsMargins(20, 15, 20, 20)
         content_layout.setSpacing(15)
 
-        settings_label = QLabel("Settings")
-        settings_label.setFont(QFont("Arial", 13, QFont.Weight.Bold))
-        settings_label.setStyleSheet(f"color: {COLORS['text_primary']};")
-        content_layout.addWidget(settings_label)
-
         vm_label = QLabel("Virtual Machines")
-        vm_label.setFont(QFont("Arial", 12, QFont.Weight.Bold))
+        vm_label.setFont(QFont(FONT, 11, QFont.Weight.Bold))
         vm_label.setStyleSheet(f"color: {COLORS['text_secondary']};")
         content_layout.addWidget(vm_label)
 
         for vm_name in self.scenario["vms"]:
             row = QHBoxLayout()
+            dot = QLabel("●")
+            dot.setFont(QFont(FONT, 8))
+            dot.setStyleSheet(f"color: {COLORS['text_tertiary']};")
+            dot.setFixedWidth(16)
+            row.addWidget(dot)
             lbl = QLabel(vm_name)
-            lbl.setFont(QFont("Arial", 11))
-            lbl.setStyleSheet("color: #cbd5e1;")
+            lbl.setFont(QFont(FONT, 11))
+            lbl.setStyleSheet(f"color: {COLORS['text_secondary']};")
             row.addWidget(lbl)
             row.addStretch()
             content_layout.addLayout(row)
@@ -375,16 +392,30 @@ class ScenarioItem(QFrame):
         self.main_layout.addWidget(self.content_area)
         self.setLayout(self.main_layout)
 
+    def _refresh_badge(self):
+        """Show or hide the completion badge based on current user_data."""
+        completed = self.user_data.get('completed_scenarios', [])
+        if self.scenario['id'] in completed:
+            self.complete_badge.show()
+        else:
+            self.complete_badge.hide()
+
+    def refresh_completion(self, user_data: dict = None):
+        """Call after a flag is submitted to update the badge without rebuilding the item."""
+        if user_data is not None:
+            self.user_data = user_data
+        self._refresh_badge()
+
     def toggle_expanded(self):
         self.is_expanded = not self.is_expanded
         if self.is_expanded:
-            self.arrow_label.setText("▼")
+            self.arrow_label.setText("⌄")
             self.content_area.show()
             self.setStyleSheet(SCENARIO_ITEM_EXPANDED_STYLE)
             if self.parent_window:
                 self.parent_window.show_scenario_vms(self.scenario)
         else:
-            self.arrow_label.setText("▶")
+            self.arrow_label.setText("›")
             self.content_area.hide()
             self.setStyleSheet(SCENARIO_ITEM_STYLE)
             if self.parent_window:

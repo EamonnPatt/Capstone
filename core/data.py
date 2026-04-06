@@ -39,7 +39,10 @@ SCENARIOS = [
             'A terminal has been opened for you.\n'
             'Your working directory is ~/practice.\n'
             'Try: ls, pwd, cd, mkdir, and cat to get started.'
-        )
+        ),
+        # Flag hidden in ~/practice/.hidden_flag — found by running: cat .hidden_flag
+        'flag': 'CL-BASICS-COMPLETE',
+        'flag_hint': 'List all files including hidden ones in ~/practice, then read the hidden flag file.',
     },
     {
         'id': 'beginner-2',
@@ -59,7 +62,11 @@ SCENARIOS = [
             'Wireshark is open and ready to capture.\n'
             'A terminal is also available.\n'
             'Try capturing traffic on the loopback interface first.'
-        )
+        ),
+        # Flag accessible via HTTP server: curl http://localhost:8080/flag.txt
+        # Also hidden in ~/practice/.network_flag
+        'flag': 'NET-FUND-COMPLETE',
+        'flag_hint': 'Check the HTTP server — try: curl http://localhost:8080/flag.txt',
     },
     {
         'id': 'intermediate-1',
@@ -83,7 +90,10 @@ SCENARIOS = [
             'Windows 11: DVWA is running. Open Chrome — it loads http://localhost/dvwa.\n'
             'Kali: Burp Suite is open with the proxy listener active on port 8080.\n'
             'Default DVWA login: admin / password'
-        )
+        ),
+        # Flag revealed after exploiting a DVWA vulnerability (stored in /var/www/html/flag.txt)
+        'flag': 'WEBAPP-SEC-COMPLETE',
+        'flag_hint': 'Exploit DVWA to gain access, then read /var/www/html/flag.txt on Windows.',
     },
     {
         'id': 'intermediate-2',
@@ -106,7 +116,10 @@ SCENARIOS = [
             'Kali: A terminal is open in ~/hashes with sample hash files.\n'
             'Ubuntu: SSH is running on port 22. Target user: "victim".\n'
             'Try: hashcat -m 0 hashes/md5.txt ~/wordlists/rockyou.txt'
-        )
+        ),
+        # Flag in ~/hashes/flag.txt, revealed after cracking the hashes
+        'flag': 'PASS-CRACK-COMPLETE',
+        'flag_hint': 'Crack the hashes in ~/hashes, then SSH into Ubuntu as "victim" and read ~/flag.txt.',
     },
     {
         'id': 'hard-1',
@@ -133,7 +146,10 @@ SCENARIOS = [
             'Kali: msfconsole is open. Run "workspace capstone" to start.\n'
             'Ubuntu target IP is noted in /root/targets.txt on Kali.\n'
             'Windows 11 target is also listed. Try ms17_010_eternalblue for Windows.'
-        )
+        ),
+        # Flag at /root/proof.txt on Ubuntu after gaining root shell via Metasploit
+        'flag': 'MSF-EXPLOIT-COMPLETE',
+        'flag_hint': 'Exploit a vulnerability on Ubuntu or Windows, get a shell, and read /root/proof.txt.',
     }
 ]
 

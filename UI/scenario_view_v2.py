@@ -12,7 +12,8 @@ from PyQt6.QtGui import QFont
 from UI.widgets import ScenarioItem, VagrantOutputDialog
 from UI.vm_embed import VMEmbedWidget
 from UI.vm_storage_dialog import VMStorageDialog
-from utils.styles import VM_DISPLAY_AREA_STYLE, LAUNCH_BUTTON_STYLE, COLORS, SPLITTER_STYLE
+from utils.styles import VM_DISPLAY_AREA_STYLE, LAUNCH_BUTTON_STYLE, COLORS, SPLITTER_STYLE, FONT
+from core.data import get_difficulty_color
 
 
 class _RunningChecker(QThread):
@@ -63,13 +64,13 @@ class ScenarioView(QWidget):
         left_layout.setSpacing(12)
 
         header = QLabel("Scenarios")
-        header.setFont(QFont("Arial", 22, QFont.Weight.Bold))
+        header.setFont(QFont(FONT, 22, QFont.Weight.Bold))
         header.setStyleSheet(f"color: {COLORS['text_primary']};")
         left_layout.addWidget(header)
 
         subtitle = QLabel("Select a scenario to get started")
-        subtitle.setFont(QFont("Arial", 11))
-        subtitle.setStyleSheet(f"color: {COLORS['text_secondary']};")
+        subtitle.setFont(QFont(FONT, 11))
+        subtitle.setStyleSheet(f"color: {COLORS['text_secondary']}; margin-bottom: 4px;")
         left_layout.addWidget(subtitle)
 
         scroll = QScrollArea()
@@ -82,14 +83,17 @@ class ScenarioView(QWidget):
         scroll_layout.setContentsMargins(0, 4, 0, 4)
         scroll_layout.setSpacing(10)
 
+        self._scenario_items = []
         for scenario in self.scenarios:
             item = ScenarioItem(
                 scenario,
                 self.vm_manager,
                 vagrant_manager=self.vagrant_manager,
+                user_data=self.user_data,
                 parent=self,
             )
             scroll_layout.addWidget(item)
+            self._scenario_items.append(item)
 
         scroll_layout.addStretch()
         scroll.setWidget(scroll_content)
@@ -126,32 +130,74 @@ class ScenarioView(QWidget):
 
     def _show_placeholder(self):
         self.vm_area_layout.addStretch()
-        icon = QLabel("⬛")
-        icon.setFont(QFont("Arial", 40))
+
+        icon = QLabel("🖥")
+        icon.setFont(QFont(FONT, 48))
         icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
         icon.setStyleSheet(f"color: {COLORS['bg_tertiary']};")
         self.vm_area_layout.addWidget(icon)
 
-        placeholder = QLabel("Select a scenario from the list\nto view and control its virtual machines")
-        placeholder.setFont(QFont("Arial", 13))
+        placeholder = QLabel("Select a scenario")
+        placeholder.setFont(QFont(FONT, 16, QFont.Weight.Bold))
         placeholder.setStyleSheet(f"color: {COLORS['text_tertiary']};")
         placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        placeholder.setWordWrap(True)
         self.vm_area_layout.addWidget(placeholder)
+
+        sub = QLabel("Choose a scenario from the list to view\nand control its virtual machines")
+        sub.setFont(QFont(FONT, 11))
+        sub.setStyleSheet(f"color: {COLORS['text_tertiary']};")
+        sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        sub.setWordWrap(True)
+        self.vm_area_layout.addWidget(sub)
         self.vm_area_layout.addStretch()
 
     def show_scenario_vms(self, scenario):
         self.current_scenario = scenario
         self._clear_vm_area()
 
+        # Header row: scenario name + difficulty badge
+        from core.progress import is_scenario_complete as _is_done
+        title_row = QHBoxLayout()
+        title_row.setSpacing(12)
+        title_row.setAlignment(Qt.AlignmentFlag.AlignVCenter)
+
         header = QLabel(scenario["name"])
-        header.setFont(QFont("Arial", 22, QFont.Weight.Bold))
+        header.setFont(QFont(FONT, 20, QFont.Weight.Bold))
         header.setStyleSheet(f"color: {COLORS['text_primary']};")
-        header.setWordWrap(True)
-        self.vm_area_layout.addWidget(header)
+        header.setWordWrap(False)
+        title_row.addWidget(header)
+
+        diff_color = get_difficulty_color(scenario["difficulty"])
+        diff_badge = QLabel(scenario["difficulty"])
+        diff_badge.setFont(QFont(FONT, 9, QFont.Weight.Bold))
+        diff_badge.setFixedHeight(24)
+        diff_badge.setStyleSheet(f"""
+            background-color: {diff_color}33;
+            color: {diff_color};
+            border: 1px solid {diff_color}66;
+            border-radius: 10px;
+            padding: 0 12px;
+        """)
+        title_row.addWidget(diff_badge, alignment=Qt.AlignmentFlag.AlignVCenter)
+
+        if _is_done(self.user_data, scenario["id"]):
+            done_badge = QLabel("✓ Completed")
+            done_badge.setFont(QFont(FONT, 9, QFont.Weight.Bold))
+            done_badge.setFixedHeight(24)
+            done_badge.setStyleSheet(f"""
+                background-color: {COLORS['success']}22;
+                color: {COLORS['success']};
+                border: 1px solid {COLORS['success']}55;
+                border-radius: 10px;
+                padding: 0 12px;
+            """)
+            title_row.addWidget(done_badge, alignment=Qt.AlignmentFlag.AlignVCenter)
+
+        title_row.addStretch()
+        self.vm_area_layout.addLayout(title_row)
 
         desc = QLabel(scenario["description"])
-        desc.setFont(QFont("Arial", 12))
+        desc.setFont(QFont(FONT, 11))
         desc.setStyleSheet(f"color: {COLORS['text_secondary']};")
         desc.setWordWrap(True)
         self.vm_area_layout.addWidget(desc)
@@ -196,9 +242,9 @@ class ScenarioView(QWidget):
             self.vm_area_layout.addLayout(info_row)
 
         vm_section_label = QLabel("Virtual Machines")
-        vm_section_label.setFont(QFont("Arial", 18, QFont.Weight.Bold))
+        vm_section_label.setFont(QFont(FONT, 13, QFont.Weight.Bold))
         vm_section_label.setStyleSheet(
-            f"color: {COLORS['text_primary']}; margin-top: 20px;"
+            f"color: {COLORS['text_secondary']}; margin-top: 8px;"
         )
         self.vm_area_layout.addWidget(vm_section_label)
 
@@ -240,6 +286,48 @@ class ScenarioView(QWidget):
         self._launch_btn.setMinimumHeight(50)
         self.vm_area_layout.addWidget(self._launch_btn)
 
+        # Submit Flag button — only shown when the scenario has a flag defined
+        if scenario.get('flag'):
+            from utils.styles import COLORS as _C
+            from core.progress import is_scenario_complete
+
+            already_done = is_scenario_complete(self.user_data, scenario['id'])
+
+            flag_btn_row = QHBoxLayout()
+            flag_btn_row.setSpacing(12)
+
+            if already_done:
+                done_lbl = QLabel("✓  Scenario Completed")
+                done_lbl.setFont(QFont("Arial", 12, QFont.Weight.Bold))
+                done_lbl.setStyleSheet(f"color: {_C['success']};")
+                flag_btn_row.addWidget(done_lbl)
+                flag_btn_row.addStretch()
+
+            flag_btn = QPushButton(
+                "Re-submit Flag" if already_done else "Submit Flag"
+            )
+            flag_btn.setFont(QFont("Arial", 12, QFont.Weight.Bold))
+            flag_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            flag_btn.setMinimumHeight(44)
+            flag_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {_C['success'] if not already_done else _C['bg_tertiary']};
+                    color: white;
+                    border: none;
+                    border-radius: 8px;
+                    padding: 10px 20px;
+                }}
+                QPushButton:hover {{
+                    background-color: {_C['success_hover'] if not already_done else _C['border_hover']};
+                }}
+            """)
+            flag_btn.clicked.connect(lambda: self._open_flag_dialog(scenario))
+            flag_btn_row.addWidget(flag_btn)
+            if not already_done:
+                flag_btn_row.addStretch()
+
+            self.vm_area_layout.addLayout(flag_btn_row)
+
         self._launch_btn_scenario = scenario
         self._refresh_launch_btn()
 
@@ -267,6 +355,20 @@ class ScenarioView(QWidget):
             return
         self._launch_btn.setEnabled(not any_running)
         self._launch_btn.setText("Scenario Running" if any_running else "Launch Scenario")
+
+    def _open_flag_dialog(self, scenario):
+        from UI.flag_dialog import FlagSubmitDialog
+        from core.progress import is_scenario_complete, mark_scenario_complete
+
+        already = is_scenario_complete(self.user_data, scenario['id'])
+        dlg = FlagSubmitDialog(scenario, already_complete=already, parent=self)
+        if dlg.exec() == dlg.DialogCode.Accepted:
+            mark_scenario_complete(self.user_data, scenario['id'])
+            # Refresh all scenario item completion badges
+            for item in getattr(self, '_scenario_items', []):
+                item.refresh_completion(self.user_data)
+            # Refresh the right panel to update button state and banner
+            self.show_scenario_vms(scenario)
 
     def _change_storage(self, scenario):
         from UI.vm_storage_dialog import VMStorageDialog

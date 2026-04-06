@@ -155,7 +155,8 @@ class _KeyboardHelpDialog(QDialog):
             ("Right Ctrl + Del",           "Send Ctrl+Alt+Delete to the VM"),
         ]),
         ("Fullscreen", [
-            ("F11  or  [ ] button",        "Toggle the app fullscreen"),
+            ("F11  or  [ ] button",        "Toggle VM-only fullscreen (VM fills the whole screen)"),
+            ("F11  or  Esc (in fullscreen)","Exit VM fullscreen and return to the app"),
             ("Right Ctrl + F",             "Toggle VirtualBox native fullscreen for this VM"),
         ]),
         ("Copy & Paste", [
@@ -289,6 +290,78 @@ class _KeyboardHelpDialog(QDialog):
         outer.addWidget(close_btn, alignment=Qt.AlignmentFlag.AlignRight)
 
 
+class _VMFullscreenOverlay(QWidget):
+    """
+    Top-level frameless window that hosts the embedded VM widget in fullscreen.
+    The VM container is re-parented into this overlay on enter, and back out on exit.
+    """
+
+    exit_requested = pyqtSignal()
+
+    def __init__(self, vm_name: str, parent=None):
+        super().__init__(None, Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint)
+        self.setWindowTitle(f"{vm_name} — Fullscreen")
+        self.setStyleSheet("background-color: black;")
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        # ── Thin top bar ──────────────────────────────────────────────
+        bar = QWidget()
+        bar.setFixedHeight(36)
+        bar.setStyleSheet(f"""
+            background-color: {COLORS['bg_secondary']};
+            border-bottom: 1px solid {COLORS['border']};
+        """)
+        bar_row = QHBoxLayout(bar)
+        bar_row.setContentsMargins(14, 0, 14, 0)
+        bar_row.setSpacing(12)
+
+        name_lbl = QLabel(vm_name)
+        name_lbl.setFont(QFont("Arial", 10, QFont.Weight.Bold))
+        name_lbl.setStyleSheet(f"color: {COLORS['text_primary']};")
+        bar_row.addWidget(name_lbl)
+
+        bar_row.addStretch()
+
+        hint = QLabel("F11 or Esc to exit")
+        hint.setFont(QFont("Arial", 9))
+        hint.setStyleSheet(f"color: {COLORS['text_secondary']};")
+        bar_row.addWidget(hint)
+
+        exit_btn = QPushButton("Exit Fullscreen")
+        exit_btn.setFont(QFont("Arial", 9, QFont.Weight.Bold))
+        exit_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        exit_btn.setFixedHeight(26)
+        exit_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {COLORS['bg_tertiary']};
+                color: {COLORS['text_primary']};
+                border: 1px solid {COLORS['border']};
+                border-radius: 5px;
+                padding: 0 12px;
+            }}
+            QPushButton:hover {{ background-color: {COLORS['border_hover']}; }}
+        """)
+        exit_btn.clicked.connect(self.exit_requested)
+        bar_row.addWidget(exit_btn)
+
+        root.addWidget(bar)
+
+        # ── VM container area ─────────────────────────────────────────
+        self._area = QWidget()
+        self._area.setStyleSheet("background-color: black;")
+        self._area_layout = QVBoxLayout(self._area)
+        self._area_layout.setContentsMargins(0, 0, 0, 0)
+        self._area_layout.setSpacing(0)
+        root.addWidget(self._area, stretch=1)
+
+        # Keyboard shortcuts
+        QShortcut(QKeySequence("F11"),    self).activated.connect(self.exit_requested)
+        QShortcut(QKeySequence("Escape"), self).activated.connect(self.exit_requested)
+
+
 class VMEmbedWidget(QFrame):
     """
     Shows a VM screen embedded inside the app.
@@ -315,6 +388,7 @@ class VMEmbedWidget(QFrame):
         self._state          = "stopped"
         self._embedded_hwnd  = None     # HWND of the currently embedded window
         self._container      = None     # QWidget wrapping the foreign QWindow
+        self._fs_overlay     = None     # _VMFullscreenOverlay when in VM fullscreen
         self._finder         = None
         self._worker         = None
         self._pollers        = []
@@ -397,7 +471,7 @@ class VMEmbedWidget(QFrame):
         bar_row.addWidget(_sep)
 
         self._fs_btn = QPushButton("[ ]")
-        self._fs_btn.setToolTip("Fullscreen  (F11)")
+        self._fs_btn.setToolTip("VM Fullscreen  (F11)")
         self._fs_btn.setFont(QFont("Courier New", 10, QFont.Weight.Bold))
         self._fs_btn.setStyleSheet(_ICON_BTN_STYLE)
         self._fs_btn.setFixedSize(32, 28)
@@ -590,15 +664,59 @@ class VMEmbedWidget(QFrame):
     # ------------------------------------------------------------------
 
     def _on_fullscreen(self):
-        win = self.window()
-        if win.isFullScreen():
-            win.showNormal()
-            self._fs_btn.setText("[ ]")
-            self._fs_btn.setToolTip("Fullscreen  (F11)")
+        """Toggle VM-only fullscreen. If no VM is embedded, does nothing."""
+        if not self._container:
+            return
+        if self._fs_overlay:
+            self._exit_vm_fullscreen()
         else:
-            win.showFullScreen()
-            self._fs_btn.setText("[x]")
-            self._fs_btn.setToolTip("Exit fullscreen  (F11)")
+            self._enter_vm_fullscreen()
+
+    def _enter_vm_fullscreen(self):
+        overlay = _VMFullscreenOverlay(vm_name=self.display_name)
+        overlay.exit_requested.connect(self._exit_vm_fullscreen)
+        self._fs_overlay = overlay
+
+        # Move the container from the body layout into the overlay
+        self._body_layout.removeWidget(self._container)
+        self._container.setParent(overlay._area)
+        overlay._area_layout.addWidget(self._container)
+        self._container.show()
+
+        # Show placeholder while VM is in fullscreen overlay
+        self._placeholder.setText(
+            f"{self.display_name} is in fullscreen.\n"
+            "Press F11 or Esc, or click Exit Fullscreen in the overlay bar."
+        )
+        self._placeholder.show()
+
+        # Show on the same screen as the main window
+        overlay.setScreen(self.screen())
+        overlay.showFullScreen()
+        overlay.raise_()
+        overlay.activateWindow()
+
+        self._fs_btn.setText("[x]")
+        self._fs_btn.setToolTip("Exit VM fullscreen  (F11)")
+
+    def _exit_vm_fullscreen(self):
+        overlay = self._fs_overlay
+        if not overlay:
+            return
+        self._fs_overlay = None
+
+        # Return the container to the body layout
+        overlay._area_layout.removeWidget(self._container)
+        self._container.setParent(self._body)
+        self._placeholder.hide()
+        self._body_layout.addWidget(self._container)
+        self._container.show()
+
+        overlay.close()
+        overlay.deleteLater()
+
+        self._fs_btn.setText("[ ]")
+        self._fs_btn.setToolTip("VM Fullscreen  (F11)")
 
     def _on_help(self):
         dlg = _KeyboardHelpDialog(self.display_name, self)
@@ -652,6 +770,10 @@ class VMEmbedWidget(QFrame):
         self._set_state("released")
 
     def _detach_container(self):
+        # If the container is in the fullscreen overlay, pull it back first
+        if self._fs_overlay:
+            self._exit_vm_fullscreen()
+
         if self._embedded_hwnd:
             try:
                 _restore_chrome(self._embedded_hwnd)
