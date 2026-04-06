@@ -1,17 +1,19 @@
 """
-Learning resources view
+Learning resources view — with clickable lesson cards that open slideshow windows
 """
 
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QScrollArea, QLabel, QFrame, QHBoxLayout
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QScrollArea, QLabel, QFrame, QHBoxLayout, QPushButton
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QFont
 from core.data import LEARNING_MODULES
 from utils.styles import MODULE_CARD_STYLE, COLORS
+from UI.lesson_view import LessonWindow
 
 
 class LearningView(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._open_lessons = []   # keep references alive
         self.setup_ui()
 
     def setup_ui(self):
@@ -53,6 +55,27 @@ class LearningView(QWidget):
             title.setStyleSheet(f"color: {COLORS['text_primary']};")
             title_row.addWidget(title)
             title_row.addStretch()
+
+            # "Open Lesson" button
+            open_btn = QPushButton("📖  Open Lesson")
+            open_btn.setFont(QFont('Arial', 10, QFont.Weight.Bold))
+            open_btn.setFixedHeight(34)
+            open_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            open_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {COLORS['accent_blue']};
+                    color: white;
+                    border: none;
+                    border-radius: 6px;
+                    padding: 0 16px;
+                }}
+                QPushButton:hover {{
+                    background-color: {COLORS['accent_blue_hover']};
+                }}
+            """)
+            open_btn.clicked.connect(lambda checked, mid=module['id']: self._open_lesson(mid))
+            title_row.addWidget(open_btn)
+
             module_layout.addLayout(title_row)
 
             desc = QLabel(module['description'])
@@ -84,3 +107,11 @@ class LearningView(QWidget):
         outer.addWidget(scroll)
 
         self.setLayout(outer)
+
+    def _open_lesson(self, module_id):
+        window = LessonWindow(module_id)
+        window.closed.connect(lambda w=window: self._open_lessons.remove(w) if w in self._open_lessons else None)
+        self._open_lessons.append(window)
+        window.show()
+        window.raise_()
+        window.activateWindow()

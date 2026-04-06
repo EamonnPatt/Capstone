@@ -137,3 +137,49 @@ def completeLesson(user_id, lesson_id):
         "lesson_completion_date": datetime.now(timezone.utc),
         "is_completed":          True,
     })
+
+
+# ---------------------------------------------------------------------------
+# Profile helpers (added for profile view)
+# ---------------------------------------------------------------------------
+
+def getUser(user_id: str) -> dict:
+    """
+    Return a user document by user_id as a plain dict,
+    with MongoDB's _id removed.
+    Returns {} if not found.
+    """
+    user = users_data.find_one({"user_id": user_id}, {"_id": 0})
+    return user or {}
+
+
+def updateProfile(user_id: str, **kwargs):
+    """
+    Update profile-specific fields for a user.
+    Accepted keys: description, skill_level, profile_photo.
+    Uses updateUser internally so all update logic stays in one place.
+    """
+    allowed = {"description", "skill_level", "profile_photo"}
+    filtered = {k: v for k, v in kwargs.items() if k in allowed}
+    if filtered:
+        updateUser(user_id, **filtered)
+
+
+def markScenarioComplete(user_id: str, scenario_id: str):
+    """
+    Add scenario_id to the user's completed_scenarios list (no duplicates).
+    Also calls completeLesson so progress is tracked in lessonsComplete too.
+    """
+    users_data.update_one(
+        {"user_id": user_id},
+        {"$addToSet": {"completed_scenarios": scenario_id}}
+    )
+    completeLesson(user_id, scenario_id)
+
+
+def getCompletedScenarios(user_id: str) -> list:
+    """Return the list of completed scenario IDs for a user."""
+    user = users_data.find_one({"user_id": user_id}, {"completed_scenarios": 1, "_id": 0})
+    if not user:
+        return []
+    return user.get("completed_scenarios", [])
