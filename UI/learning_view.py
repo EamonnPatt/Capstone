@@ -11,8 +11,9 @@ from UI.lesson_view import LessonWindow
 
 
 class LearningView(QWidget):
-    def __init__(self, parent=None):
+    def __init__(self, user_data=None, parent=None):
         super().__init__(parent)
+        self.user_data = user_data or {}
         self._open_lessons = []   # keep references alive
         self.setup_ui()
 
@@ -113,7 +114,7 @@ class LearningView(QWidget):
         self.setLayout(outer)
 
     def _open_lesson(self, module_id):
-        window = LessonWindow(module_id)
+        window = LessonWindow(module_id, user_data=self.user_data)
         window.closed.connect(lambda w=window: self._open_lessons.remove(w) if w in self._open_lessons else None)
         self._open_lessons.append(window)
         window.show()

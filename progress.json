@@ -1,7 +1,6 @@
 {
-  "completed_scenarios": [
-    "beginner-1",
-    "beginner-2"
-  ],
-  "learning_modules_completed": 3
+  "completed_scenarios": [],
+  "learning_modules_completed": [
+    "web-security"
+  ]
 }

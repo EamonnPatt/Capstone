@@ -593,9 +593,10 @@ class QuizSlide(QWidget):
 class LessonWindow(QWidget):
     closed = pyqtSignal()
 
-    def __init__(self, module_id, parent=None):
+    def __init__(self, module_id, user_data=None, parent=None):
         super().__init__(parent)
         self.module_id = module_id
+        self.user_data = user_data or {}
         self.lesson = LESSON_CONTENT.get(module_id, {})
         self.slides = self.lesson.get('slides', [])
         self.accent = self.lesson.get('color', '#3b82f6')
@@ -767,6 +768,9 @@ class LessonWindow(QWidget):
             widget = IntroSlide(slide_data, self.accent)
         elif slide_type == 'quiz':
             widget = QuizSlide(slide_data, self.accent)
+            widget.answered.connect(
+                lambda correct, sd=slide_data: self._on_quiz_answered(correct, sd)
+            )
         else:
             widget = LessonSlide(slide_data, self.accent)
 
@@ -788,10 +792,36 @@ class LessonWindow(QWidget):
         if self.current_index < len(self.slides) - 1:
             self._show_slide(self.current_index + 1)
         else:
+            self._finish_lesson()
             self._on_close()
 
     def _prev_slide(self):
         self._show_slide(self.current_index - 1)
+
+    def _finish_lesson(self):
+        """Save lesson completion to DB and local progress."""
+        if self.user_data:
+            try:
+                from core.progress import mark_module_complete
+                mark_module_complete(self.user_data, self.module_id)
+            except Exception as e:
+                print(f"[lesson] Could not save completion: {e}")
+
+    def _on_quiz_answered(self, correct, slide_data):
+        """Save quiz result to DB."""
+        user_id = self.user_data.get('user_id')
+        if not user_id:
+            return
+        try:
+            import core.database as db
+            db.saveQuizResult(
+                user_id,
+                self.module_id,
+                correct,
+                question=slide_data.get('question'),
+            )
+        except Exception as e:
+            print(f"[lesson] Could not save quiz result: {e}")
 
     def _on_close(self):
         self.closed.emit()

@@ -555,6 +555,9 @@ class VMEmbedWidget(QFrame):
         """First-time Vagrant provisioning."""
         if not self.vagrant_manager or not self.scenario_id:
             return
+        if self._state == "starting":
+            return   # already in progress — ignore double-click
+
         from UI.vm_storage_dialog import VMStorageDialog
         scenario_name = self.scenario.get("name") if self.scenario else None
         if not VMStorageDialog.ensure_configured(self, scenario_name=scenario_name):
@@ -564,21 +567,31 @@ class VMEmbedWidget(QFrame):
         self._placeholder.setText(f"Provisioning {self.display_name}\n(first-time setup — this may take a while)")
 
         from UI.widgets import VagrantOutputDialog
-        self._vagrant_dlg = VagrantOutputDialog(f"Provisioning {self.display_name}", self)
-        self._vagrant_dlg.show()
+        dlg = VagrantOutputDialog(f"Provisioning {self.display_name}", self)
+        self._vagrant_dlg = dlg
+        dlg.finished.connect(lambda: setattr(self, '_vagrant_dlg', None))
+        dlg.show()
+
+        def _safe_call(fn, *args):
+            """Call fn only if the dialog still exists as a live Qt object."""
+            try:
+                if self._vagrant_dlg is not None:
+                    fn(*args)
+            except RuntimeError:
+                # Dialog's C++ object was already deleted
+                pass
 
         def _done(ok):
             if ok:
-                self._vagrant_dlg.mark_done(True)
-                # Now start + embed
+                _safe_call(dlg.mark_done, True)
                 self._do_start_and_embed()
             else:
-                self._vagrant_dlg.mark_done(False)
+                _safe_call(dlg.mark_done, False)
                 self._set_state("not_created")
 
         self.vagrant_manager.up_async(
             self.scenario_id, self.display_name,
-            output_cb=lambda line: self._vagrant_dlg.append_line(line),
+            output_cb=lambda line: _safe_call(dlg.append_line, line),
             done_cb=_done,
         )
 

@@ -65,3 +65,24 @@ def mark_scenario_complete(user_data: dict, scenario_id: str) -> None:
 def is_scenario_complete(user_data: dict, scenario_id: str) -> bool:
     """Return True if the given scenario has been completed."""
     return scenario_id in user_data.get('completed_scenarios', [])
+
+
+def mark_module_complete(user_data: dict, module_id: str) -> None:
+    """Add module_id to completed list, persist to MongoDB and local JSON."""
+    completed = user_data.setdefault('learning_modules_completed', [])
+    if module_id not in completed:
+        completed.append(module_id)
+
+    if user_data.get('user_id'):
+        try:
+            import core.database as db
+            db.completeLesson(user_data['user_id'], module_id)
+        except Exception as e:
+            print(f"[progress] MongoDB write failed: {e}")
+
+    save_progress(user_data)
+
+
+def is_module_complete(user_data: dict, module_id: str) -> bool:
+    """Return True if the given learning module has been completed."""
+    return module_id in user_data.get('learning_modules_completed', [])

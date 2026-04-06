@@ -1,0 +1,191 @@
+# Scenario: intermediate-2 — Password Cracking
+# VMs: Kali Linux (attacker) + Ubuntu 22.04 (target with weak credentials)
+#
+# Network: 192.168.58.0/24
+#   Kali   → 192.168.58.10
+#   Ubuntu → 192.168.58.20
+
+Vagrant.configure("2") do |config|
+
+  # ── Ubuntu target (SSH + weak credentials) ────────────────────────────
+  config.vm.define "ubuntu" do |ubuntu|
+    ubuntu.vm.box      = "ubuntu/jammy64"
+    ubuntu.vm.hostname = "passwd-target"
+
+    ubuntu.vm.network "private_network", ip: "192.168.58.20"
+
+    ubuntu.vm.provider "virtualbox" do |vb|
+      vb.name   = "cyberlab-intermediate2-ubuntu"
+      vb.memory = 1024
+      vb.cpus   = 1
+      vb.gui    = false
+      vb.customize ["modifyvm", :id, "--natdnshostresolver1", "on"]
+    end
+
+    ubuntu.vm.provision "shell", inline: <<-SHELL
+      export DEBIAN_FRONTEND=noninteractive
+      echo "[cyberlab] Setting up Password Cracking target (Ubuntu)..."
+
+      apt-get update -qq
+      apt-get install -y -qq openssh-server
+
+      # ── Create the "victim" user with a crackable password ────────────
+      # Password is "dragon" — appears in rockyou.txt
+      id victim &>/dev/null || useradd -m -s /bin/bash victim
+      echo "victim:dragon" | chpasswd
+
+      # ── Allow SSH password authentication ─────────────────────────────
+      sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
+      sed -i 's/^#*PubkeyAuthentication.*/PubkeyAuthentication yes/'    /etc/ssh/sshd_config
+      systemctl restart ssh
+
+      # ── Flag for the victim user (found after SSH login) ──────────────
+      echo "Flag: PASS-CRACK-COMPLETE" > /home/victim/flag.txt
+      chown victim:victim /home/victim/flag.txt
+      chmod 600 /home/victim/flag.txt
+
+      # ── A second account with a stronger password for bonus challenge ──
+      id admin_lab &>/dev/null || useradd -m -s /bin/bash admin_lab
+      echo "admin_lab:Sup3rS3cur3!" | chpasswd
+
+      echo "[cyberlab] Ubuntu target ready. SSH on port 22."
+      echo "[cyberlab] Target user: victim | password: dragon (in rockyou.txt)"
+      echo "[cyberlab] Snapshot: VBoxManage snapshot cyberlab-intermediate2-ubuntu take scenario-passwords-ubuntu --pause"
+    SHELL
+  end
+
+  # ── Kali attacker (Hashcat + John + wordlists) ────────────────────────
+  config.vm.define "kali" do |kali|
+    kali.vm.box      = "kalilinux/rolling"
+    kali.vm.hostname = "kali-passwords"
+
+    kali.vm.network "private_network", ip: "192.168.58.10"
+
+    kali.vm.provider "virtualbox" do |vb|
+      vb.name   = "cyberlab-intermediate2-kali"
+      vb.memory = 3072
+      vb.cpus   = 2
+      vb.gui    = true
+      vb.customize ["modifyvm", :id, "--natdnshostresolver1", "on"]
+      vb.customize ["modifyvm", :id, "--vram", "32"]
+    end
+
+    kali.vm.provision "shell", inline: <<-SHELL
+      export DEBIAN_FRONTEND=noninteractive
+      echo "[cyberlab] Setting up Password Cracking — Kali attacker..."
+
+      apt-get update -qq
+      apt-get install -y -qq \
+        hashcat \
+        john \
+        hydra \
+        medusa \
+        nmap \
+        wordlists \
+        curl wget
+
+      # ── Decompress rockyou if needed ──────────────────────────────────
+      if [ ! -f /usr/share/wordlists/rockyou.txt ]; then
+        gunzip -k /usr/share/wordlists/rockyou.txt.gz 2>/dev/null || true
+      fi
+
+      # ── Create ~/hashes with sample hash files ────────────────────────
+      mkdir -p /home/vagrant/hashes
+
+      # MD5 hashes — crackable with rockyou
+      # "dragon" → MD5
+      echo "8621ffdbc5698829397d97767ac13db3" > /home/vagrant/hashes/md5.txt
+      # "password" → MD5
+      echo "5f4dcc3b5aa765d61d8327deb882cf99" >> /home/vagrant/hashes/md5.txt
+      # "123456" → MD5
+      echo "e10adc3949ba59abbe56e057f20f883e" >> /home/vagrant/hashes/md5.txt
+      # "letmein" → MD5
+      echo "0d107d09f5bbe40cade3de5c71e9e9b7" >> /home/vagrant/hashes/md5.txt
+
+      # SHA-1 hashes
+      # "dragon" → SHA1
+      echo "9c1185a5c5e9fc54612808977ee8f548b2258d31" > /home/vagrant/hashes/sha1.txt
+      # "password" → SHA1
+      echo "5baa61e4c9b93f3f0682250b6cf8331b7ee68fd8" >> /home/vagrant/hashes/sha1.txt
+
+      # SHA-256 hashes
+      # "dragon" → SHA256
+      echo "9c5a9b14b4ded89b8c3e81ea9b24ef4dcd49e8d7d30c43c9f9c6697c2a43e8d" > /home/vagrant/hashes/sha256.txt
+      # "password" → SHA256
+      echo "5e884898da28047151d0e56f8dc6292773603d0d6aabbdd62a11ef721d1542d8" >> /home/vagrant/hashes/sha256.txt
+
+      # Linux /etc/shadow style (SHA-512 crypt)
+      # These are "dragon" and "password" with a $6$ prefix
+      python3 -c "
+import crypt, os
+users = [('victim', 'dragon'), ('admin', 'password'), ('backup', 'letmein')]
+with open('/home/vagrant/hashes/shadow_format.txt', 'w') as f:
+    for user, pw in users:
+        salt = crypt.mksalt(crypt.METHOD_SHA512)
+        h = crypt.crypt(pw, salt)
+        f.write(f'{user}:{h}:19000:0:99999:7:::\n')
+" 2>/dev/null || echo "victim:\$6\$salt\$hashedvalue:19000:0:99999:7:::" > /home/vagrant/hashes/shadow_format.txt
+
+      # Hint file
+      cat > /home/vagrant/hashes/README.txt << 'EOF'
+================================================
+  CyberLab — Scenario 4: Password Cracking
+================================================
+
+Hash files in this directory:
+  md5.txt         — MD5 hashes (hashcat mode -m 0)
+  sha1.txt        — SHA-1 hashes (hashcat mode -m 100)
+  sha256.txt      — SHA-256 hashes (hashcat mode -m 1400)
+  shadow_format.txt — Linux shadow file format (john --format=sha512crypt)
+
+Wordlist: /usr/share/wordlists/rockyou.txt
+
+--- Hashcat examples ---
+  hashcat -m 0    hashes/md5.txt    /usr/share/wordlists/rockyou.txt
+  hashcat -m 100  hashes/sha1.txt   /usr/share/wordlists/rockyou.txt
+  hashcat -m 1400 hashes/sha256.txt /usr/share/wordlists/rockyou.txt
+
+--- John the Ripper examples ---
+  john --wordlist=/usr/share/wordlists/rockyou.txt hashes/shadow_format.txt
+  john --show hashes/shadow_format.txt
+
+--- SSH Brute Force (once you've cracked a password) ---
+Target IP: 192.168.58.20   User: victim
+  hydra -l victim -P /usr/share/wordlists/rockyou.txt 192.168.58.20 ssh
+  ssh victim@192.168.58.20
+    (then: cat ~/flag.txt)
+
+--- Flag ---
+The flag is in /home/victim/flag.txt on the Ubuntu target.
+Crack the password, SSH in, and read it.
+EOF
+
+      # ── Flag in ~/hashes — appears after cracking (symbolic guidance) ──
+      echo "Crack the hashes above, then SSH to 192.168.58.20 as 'victim' and cat ~/flag.txt" \
+        > /home/vagrant/hashes/HINT.txt
+
+      chown -R vagrant:vagrant /home/vagrant/hashes
+
+      # ── Desktop shortcuts ──────────────────────────────────────────────
+      mkdir -p /home/vagrant/Desktop
+
+      cat > /home/vagrant/Desktop/Open_Terminal_Hashes.desktop << 'EOF'
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Terminal in ~/hashes
+Exec=bash -c "cd /home/vagrant/hashes && xfce4-terminal --working-directory=/home/vagrant/hashes"
+Icon=utilities-terminal
+Terminal=false
+Categories=Utility;
+EOF
+      chmod +x /home/vagrant/Desktop/Open_Terminal_Hashes.desktop
+      chown -R vagrant:vagrant /home/vagrant/Desktop
+
+      echo "[cyberlab] intermediate-2 Kali provisioning complete."
+      echo "[cyberlab] Target SSH: 192.168.58.20  user: victim  password in rockyou.txt"
+      echo "[cyberlab] Snapshot: VBoxManage snapshot cyberlab-intermediate2-kali take scenario-passwords-kali --pause"
+    SHELL
+  end
+
+end

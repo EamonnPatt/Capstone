@@ -27,6 +27,7 @@ class VagrantOutputDialog(QDialog):
         self.setWindowTitle(title)
         self.setMinimumSize(700, 420)
         self.setModal(False)
+        self._lock_banner_shown = False
 
         layout = QVBoxLayout()
         layout.setContentsMargins(16, 16, 16, 16)
@@ -44,6 +45,45 @@ class VagrantOutputDialog(QDialog):
             }}
         """)
         layout.addWidget(self.log)
+
+        # Banner shown when a Vagrant lock conflict is detected
+        self._lock_banner = QFrame()
+        self._lock_banner.setStyleSheet(f"""
+            QFrame {{
+                background-color: #451a03;
+                border: 1px solid #f97316;
+                border-radius: 6px;
+            }}
+        """)
+        banner_row = QHBoxLayout(self._lock_banner)
+        banner_row.setContentsMargins(12, 8, 12, 8)
+        banner_row.setSpacing(12)
+        banner_lbl = QLabel(
+            "A stale Vagrant process is holding a lock on this VM. "
+            "Click the button to kill it, then close and try Provision again."
+        )
+        banner_lbl.setFont(QFont("Arial", 10))
+        banner_lbl.setStyleSheet("color: #fed7aa; background: transparent; border: none;")
+        banner_lbl.setWordWrap(True)
+        banner_row.addWidget(banner_lbl, stretch=1)
+        kill_btn = QPushButton("Kill stale processes")
+        kill_btn.setFont(QFont("Arial", 10, QFont.Weight.Bold))
+        kill_btn.setFixedHeight(32)
+        kill_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        kill_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #f97316;
+                color: white;
+                border: none;
+                border-radius: 5px;
+                padding: 0 14px;
+            }
+            QPushButton:hover { background-color: #ea580c; }
+        """)
+        kill_btn.clicked.connect(self._kill_stale_vagrant)
+        banner_row.addWidget(kill_btn)
+        self._lock_banner.hide()
+        layout.addWidget(self._lock_banner)
 
         self.status_label = QLabel("Running...")
         self.status_label.setFont(QFont("Arial", 10))
@@ -68,6 +108,9 @@ class VagrantOutputDialog(QDialog):
     def append_line(self, line: str):
         self.log.append(line)
         self.log.moveCursor(QTextCursor.MoveOperation.End)
+        if not self._lock_banner_shown and "another process is already executing" in line.lower():
+            self._lock_banner_shown = True
+            self._lock_banner.show()
 
     def mark_done(self, success: bool):
         if success:
@@ -76,6 +119,24 @@ class VagrantOutputDialog(QDialog):
         else:
             self.status_label.setText("Failed - check output above")
             self.status_label.setStyleSheet(f"color: {COLORS['danger']};")
+        self.close_btn.setEnabled(True)
+
+    def _kill_stale_vagrant(self):
+        import subprocess, platform
+        killed = []
+        if platform.system() == "Windows":
+            for proc in ("ruby.exe", "vagrant.exe"):
+                result = subprocess.run(
+                    ["taskkill", "/F", "/IM", proc],
+                    capture_output=True, text=True
+                )
+                if result.returncode == 0:
+                    killed.append(proc)
+        if killed:
+            self.log.append(f"\n[CyberLab] Killed: {', '.join(killed)}. Close this window and press Provision to try again.")
+        else:
+            self.log.append("\n[CyberLab] No stale Vagrant processes found. You may need to restart the app.")
+        self.log.moveCursor(QTextCursor.MoveOperation.End)
         self.close_btn.setEnabled(True)
 
 

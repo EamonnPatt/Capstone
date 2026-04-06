@@ -1,0 +1,266 @@
+# Scenario: intermediate-1 — Web Application Security
+# VMs: Kali Linux (attacker) + Windows 11 (DVWA target)
+# Kali is provisioned automatically. Windows 11 requires a manually packaged box.
+# See README for Windows 11 box setup instructions (cyberlab/windows11).
+#
+# Network: 192.168.57.0/24
+#   Kali    → 192.168.57.10
+#   Win11   → 192.168.57.20
+
+Vagrant.configure("2") do |config|
+
+  # ── Windows 11 target (DVWA) ──────────────────────────────────────────
+  config.vm.define "windows11" do |win|
+    win.vm.box      = "cyberlab/windows11"
+    win.vm.hostname = "dvwa-target"
+
+    win.vm.network "private_network", ip: "192.168.57.20"
+
+    win.vm.communicator = "winssh"
+    win.vm.boot_timeout = 600
+
+    win.vm.provider "virtualbox" do |vb|
+      vb.name   = "cyberlab-intermediate1-windows11"
+      vb.memory = 4096
+      vb.cpus   = 2
+      vb.gui    = true
+      vb.customize ["modifyvm", :id, "--natdnshostresolver1", "on"]
+      vb.customize ["modifyvm", :id, "--vram", "128"]
+      vb.customize ["modifyvm", :id, "--clipboard", "bidirectional"]
+    end
+
+    # PowerShell provisioner — installs XAMPP + DVWA, writes the flag
+    win.vm.provision "shell", privileged: true, powershell_elevated_interactive: false, inline: <<-PS
+      Write-Host "[cyberlab] Configuring Windows 11 DVWA target..."
+
+      # ── Disable Windows Firewall for the lab network ──────────────────
+      Set-NetFirewallProfile -Profile Domain,Public,Private -Enabled False
+
+      # ── Install Chocolatey if not present ─────────────────────────────
+      if (-not (Get-Command choco -ErrorAction SilentlyContinue)) {
+        Write-Host "[cyberlab] Installing Chocolatey..."
+        Set-ExecutionPolicy Bypass -Scope Process -Force
+        [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
+        Invoke-Expression ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
+      }
+
+      # ── Install XAMPP (Apache + PHP + MySQL) ──────────────────────────
+      if (-not (Test-Path "C:\\xampp\\apache\\bin\\httpd.exe")) {
+        Write-Host "[cyberlab] Installing XAMPP..."
+        choco install xampp --version=8.2.12 -y --no-progress 2>&1
+      }
+
+      # ── Download and configure DVWA ───────────────────────────────────
+      $dvwaPath = "C:\\xampp\\htdocs\\dvwa"
+      if (-not (Test-Path $dvwaPath)) {
+        Write-Host "[cyberlab] Setting up DVWA..."
+        # Download DVWA
+        $dvwaZip = "$env:TEMP\\dvwa.zip"
+        Invoke-WebRequest -Uri "https://github.com/digininja/DVWA/archive/refs/heads/master.zip" `
+          -OutFile $dvwaZip -UseBasicParsing
+        Expand-Archive -Path $dvwaZip -DestinationPath "C:\\xampp\\htdocs\\" -Force
+        Rename-Item "C:\\xampp\\htdocs\\DVWA-master" "dvwa" -ErrorAction SilentlyContinue
+
+        # Configure DVWA
+        Copy-Item "$dvwaPath\\config\\config.inc.php.dist" "$dvwaPath\\config\\config.inc.php"
+        (Get-Content "$dvwaPath\\config\\config.inc.php") `
+          -replace "p@ssw0rd", "dvwa" `
+          -replace "db_user.*=.*'root'", "db_user = 'root'" |
+          Set-Content "$dvwaPath\\config\\config.inc.php"
+
+        # Set security level to low for the lab
+        (Get-Content "$dvwaPath\\config\\config.inc.php") `
+          -replace "'impossible'", "'low'" |
+          Set-Content "$dvwaPath\\config\\config.inc.php"
+      }
+
+      # ── Write the scenario flag ───────────────────────────────────────
+      $flagPath = "C:\\xampp\\htdocs\\flag.txt"
+      Set-Content -Path $flagPath -Value "Flag: WEBAPP-SEC-COMPLETE"
+
+      # ── Start XAMPP services ──────────────────────────────────────────
+      $xamppBat = "C:\\xampp\\xampp_start.bat"
+      if (Test-Path $xamppBat) {
+        Start-Process -FilePath $xamppBat -Wait -WindowStyle Hidden
+      }
+
+      # Make XAMPP services start automatically
+      $apacheSvc = Get-Service -Name "Apache2.4" -ErrorAction SilentlyContinue
+      if ($apacheSvc) { Set-Service -Name "Apache2.4" -StartupType Automatic }
+      $mysqlSvc = Get-Service -Name "mysql" -ErrorAction SilentlyContinue
+      if ($mysqlSvc) { Set-Service -Name "mysql" -StartupType Automatic }
+
+      # ── Desktop shortcut to open DVWA in Chrome ───────────────────────
+      $shell   = New-Object -ComObject WScript.Shell
+      $shortcut = $shell.CreateShortcut("$env:PUBLIC\\Desktop\\Open DVWA.lnk")
+      $shortcut.TargetPath = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
+      $shortcut.Arguments  = "http://localhost/dvwa/setup.php"
+      $shortcut.Save()
+
+      Write-Host "[cyberlab] Windows 11 DVWA target ready."
+      Write-Host "[cyberlab] DVWA login: admin / password"
+      Write-Host "[cyberlab] Flag at: C:\\xampp\\htdocs\\flag.txt"
+      Write-Host "[cyberlab] Snapshot: VBoxManage snapshot cyberlab-intermediate1-windows11 take scenario-webapp-win11 --pause"
+    PS
+  end
+
+  # ── Kali attacker (Burp Suite) ─────────────────────────────────────────
+  config.vm.define "kali" do |kali|
+    kali.vm.box      = "kalilinux/rolling"
+    kali.vm.hostname = "kali-webapp"
+
+    kali.vm.network "private_network", ip: "192.168.57.10"
+
+    kali.vm.provider "virtualbox" do |vb|
+      vb.name   = "cyberlab-intermediate1-kali"
+      vb.memory = 3072
+      vb.cpus   = 2
+      vb.gui    = true
+      vb.customize ["modifyvm", :id, "--natdnshostresolver1", "on"]
+      vb.customize ["modifyvm", :id, "--vram", "32"]
+    end
+
+    kali.vm.provision "shell", inline: <<-SHELL
+      export DEBIAN_FRONTEND=noninteractive
+      echo "[cyberlab] Setting up Web App Security — Kali attacker..."
+
+      apt-get update -qq
+
+      # ── Tools (Burp Suite CE + supporting tools) ──────────────────────
+      apt-get install -y -qq \
+        burpsuite \
+        firefox-esr \
+        sqlmap \
+        nikto \
+        gobuster \
+        curl wget \
+        python3 python3-pip
+
+      # ── Wordlists ─────────────────────────────────────────────────────
+      if [ ! -f /usr/share/wordlists/rockyou.txt ]; then
+        apt-get install -y -qq wordlists
+        gunzip -k /usr/share/wordlists/rockyou.txt.gz 2>/dev/null || true
+      fi
+
+      # ── FoxyProxy config so Firefox routes through Burp ───────────────
+      # Write a Firefox user.js that pre-configures the proxy
+      mkdir -p /home/vagrant/.mozilla/firefox/cyberlab.default
+
+      cat > /home/vagrant/.mozilla/firefox/cyberlab.default/user.js << 'EOF'
+user_pref("network.proxy.type", 1);
+user_pref("network.proxy.http", "127.0.0.1");
+user_pref("network.proxy.http_port", 8080);
+user_pref("network.proxy.ssl", "127.0.0.1");
+user_pref("network.proxy.ssl_port", 8080);
+user_pref("network.proxy.no_proxies_on", "");
+user_pref("browser.startup.homepage", "http://192.168.57.20/dvwa/");
+EOF
+
+      cat > /home/vagrant/.mozilla/firefox/profiles.ini << 'EOF'
+[Install4F96D1932A9F858E]
+Default=cyberlab.default
+Locked=1
+
+[Profile0]
+Name=cyberlab
+IsRelative=1
+Path=cyberlab.default
+Default=1
+
+[General]
+StartWithLastProfile=1
+Version=2
+EOF
+
+      chown -R vagrant:vagrant /home/vagrant/.mozilla
+
+      # ── Practice notes ─────────────────────────────────────────────────
+      mkdir -p /home/vagrant/practice
+      cat > /home/vagrant/practice/README.txt << 'EOF'
+========================================================
+  CyberLab — Scenario 3: Web Application Security
+========================================================
+
+Target: http://192.168.57.20/dvwa/
+DVWA login: admin / password
+Security level: Low (change in DVWA Security tab)
+
+--- Burp Suite Workflow ---
+1. Open Burp Suite from the desktop shortcut
+2. Accept the defaults → Start Burp
+3. Go to Proxy > Intercept → ensure "Intercept is on"
+4. Firefox is pre-configured to route through Burp on :8080
+5. Open Firefox — it loads DVWA automatically
+
+--- Challenges ---
+
+1. SQL Injection (DVWA > SQL Injection)
+   - Try: 1' OR '1'='1
+   - Use sqlmap: sqlmap -u "http://192.168.57.20/dvwa/vulnerabilities/sqli/?id=1&Submit=Submit" \
+       --cookie="security=low; PHPSESSID=<your-session>" --dbs
+
+2. Command Injection (DVWA > Command Injection)
+   - Try: 127.0.0.1; cat /etc/passwd
+   - Try: 127.0.0.1 && whoami
+
+3. XSS Reflected (DVWA > XSS Reflected)
+   - Try: <script>alert('XSS')</script>
+
+4. File Inclusion (DVWA > File Inclusion)
+   - Try: ?page=../../../../etc/passwd
+
+--- Flag ---
+After exploiting any vulnerability:
+  curl http://192.168.57.20/flag.txt
+EOF
+
+      # ── Desktop shortcuts ──────────────────────────────────────────────
+      mkdir -p /home/vagrant/Desktop
+
+      cat > /home/vagrant/Desktop/Open_BurpSuite.desktop << 'EOF'
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Burp Suite
+Comment=Web security testing proxy
+Exec=burpsuite
+Icon=burpsuite
+Terminal=false
+Categories=Network;Security;
+EOF
+      chmod +x /home/vagrant/Desktop/Open_BurpSuite.desktop
+
+      cat > /home/vagrant/Desktop/Open_Firefox_DVWA.desktop << 'EOF'
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Firefox → DVWA
+Comment=Open DVWA in Firefox (proxy via Burp)
+Exec=firefox http://192.168.57.20/dvwa/
+Icon=firefox-esr
+Terminal=false
+Categories=Network;
+EOF
+      chmod +x /home/vagrant/Desktop/Open_Firefox_DVWA.desktop
+
+      cat > /home/vagrant/Desktop/Open_Terminal.desktop << 'EOF'
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Terminal
+Exec=xfce4-terminal
+Icon=utilities-terminal
+Terminal=false
+Categories=Utility;
+EOF
+      chmod +x /home/vagrant/Desktop/Open_Terminal.desktop
+      chown -R vagrant:vagrant /home/vagrant/Desktop
+      chown -R vagrant:vagrant /home/vagrant/practice
+
+      echo "[cyberlab] intermediate-1 Kali provisioning complete."
+      echo "[cyberlab] Target DVWA: http://192.168.57.20/dvwa/"
+      echo "[cyberlab] Snapshot: VBoxManage snapshot cyberlab-intermediate1-kali take scenario-webapp-kali --pause"
+    SHELL
+  end
+
+end

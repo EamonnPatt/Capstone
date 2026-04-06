@@ -183,3 +183,21 @@ def getCompletedScenarios(user_id: str) -> list:
     if not user:
         return []
     return user.get("completed_scenarios", [])
+
+
+# ---------------------------------------------------------------------------
+# Quiz results
+# ---------------------------------------------------------------------------
+
+quiz_results_data = db["quizResults"]
+
+
+def saveQuizResult(user_id: str, module_id: str, correct: bool, question: str = None):
+    """Save a quiz answer result for a user."""
+    quiz_results_data.insert_one({
+        "user_id":     user_id,
+        "module_id":   module_id,
+        "question":    question,
+        "correct":     correct,
+        "answered_at": datetime.now(timezone.utc),
+    })

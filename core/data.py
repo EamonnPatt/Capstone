@@ -14,6 +14,9 @@ SCENARIOS = [
         'description': 'Learn fundamental command line operations in a Linux environment. '
                        'A terminal is pre-opened with a practice directory ready to go.',
         'vms': ['Linux Kali'],
+        'vbox_names': {
+            'Linux Kali': 'cyberlab-beginner1-kali',
+        },
         'snapshots': {
             'Linux Kali': 'scenario-cmdline-kali',
         },

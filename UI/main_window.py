@@ -8,6 +8,7 @@ from PyQt6.QtGui import QFont
 
 import core.database as db
 from core.vm_manager import VMManager
+from core.vagrant_manager import VagrantManager
 from core.data import SCENARIOS
 from UI.scenario_view_v2 import ScenarioView
 from UI.learning_view import LearningView
@@ -26,6 +27,7 @@ class CyberTrainingApp(QMainWindow):
 
         self.user_id = user_id
         self.vm_manager = VMManager()
+        self.vagrant_manager = VagrantManager()
         self.scenarios = SCENARIOS
         self.current_view = "scenarios"
 
@@ -116,10 +118,12 @@ class CyberTrainingApp(QMainWindow):
 
     def show_scenarios_view(self):
         user = db.getUser(self.user_id)
-        self._set_content(ScenarioView(self.scenarios, self.vm_manager, user))
+        self._set_content(ScenarioView(self.scenarios, self.vm_manager, user,
+                                       vagrant_manager=self.vagrant_manager))
 
     def show_learning_view(self):
-        self._set_content(LearningView())
+        user = db.getUser(self.user_id)
+        self._set_content(LearningView(user_data=user))
 
     def show_profile_view(self):
         # Re-fetches from MongoDB each time so changes are always current

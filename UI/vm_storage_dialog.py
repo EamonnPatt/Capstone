@@ -338,8 +338,14 @@ class VMStorageDialog(QDialog):
 
     @staticmethod
     def ensure_configured(parent=None, scenario_name: str = None) -> bool:
-        if get_vagrant_home():
-            apply_vagrant_home(get_vagrant_home())
-            return True
+        saved = get_vagrant_home()
+        if saved:
+            # Validate the drive still exists before trusting the saved path
+            drive = Path(saved).anchor
+            if os.path.exists(drive):
+                apply_vagrant_home(saved)
+                return True
+            # Drive is gone — clear the stale config and fall through to the dialog
+            save_config({"vagrant_home": None})
         dlg = VMStorageDialog(scenario_name=scenario_name, parent=parent)
         return dlg.exec() == QDialog.DialogCode.Accepted

