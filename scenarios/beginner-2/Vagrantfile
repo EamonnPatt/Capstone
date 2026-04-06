@@ -1,0 +1,190 @@
+# Scenario: beginner-2 — Network Fundamentals
+# VM: Ubuntu 22.04 LTS
+# Provisions an Ubuntu desktop with Wireshark, a pre-made capture file to
+# analyse, and a running HTTP + ping traffic generator for live capture practice.
+
+Vagrant.configure("2") do |config|
+
+  config.vm.define "ubuntu" do |ubuntu|
+    ubuntu.vm.box      = "ubuntu/jammy64"
+    ubuntu.vm.hostname = "ubuntu-network"
+
+    ubuntu.vm.network "private_network", ip: "192.168.57.10"
+
+    ubuntu.vm.provider "virtualbox" do |vb|
+      vb.name   = "cyberlab-beginner2-ubuntu"
+      vb.memory = 2048
+      vb.cpus   = 2
+      vb.gui    = true
+      vb.customize ["modifyvm", :id, "--natdnshostresolver1", "on"]
+      vb.customize ["modifyvm", :id, "--vram", "32"]
+    end
+
+    ubuntu.vm.provision "shell", inline: <<-SHELL
+      export DEBIAN_FRONTEND=noninteractive
+
+      echo "[cyberlab] Setting up Network Fundamentals scenario..."
+
+      apt-get update -qq
+
+      # ── Tools ─────────────────────────────────────────────────────────
+      apt-get install -y -qq \
+        wireshark wireshark-qt \
+        net-tools nmap curl wget \
+        tcpdump tshark \
+        python3 python3-pip \
+        iputils-ping \
+        nginx
+
+      # Allow non-root packet capture
+      echo "wireshark wireshark/install-setuid boolean true" | debconf-set-selections
+      dpkg-reconfigure -f noninteractive wireshark-common
+      usermod -aG wireshark vagrant
+
+      # ── Practice directory ────────────────────────────────────────────
+      mkdir -p /home/vagrant/practice/captures
+
+      cat > /home/vagrant/practice/README.txt << 'EOF'
+================================================
+  CyberLab — Scenario 2: Network Fundamentals
+================================================
+
+Tools available: wireshark, tcpdump, tshark, nmap, net-tools
+
+--- Part 1: Analyse a pre-made capture ---
+
+A packet capture has been saved to captures/sample.pcap.
+Open it in Wireshark and answer:
+  1. What protocol makes up most of the traffic?
+  2. Find the HTTP GET request — what URL was requested?
+  3. How many unique IP addresses appear in the capture?
+  4. Filter for only TCP traffic: type  tcp  in the Wireshark filter bar
+
+--- Part 2: Live capture ---
+
+A small web server is running on this machine (port 8080).
+  1. Start a capture in Wireshark on the 'lo' (loopback) interface
+  2. Open a terminal and run:  curl http://localhost:8080
+  3. Stop the capture and find the HTTP request/response in the packet list
+
+--- Part 3: Network scanning ---
+
+  1. Find your IP address:  ip addr show
+  2. Scan your own machine:  nmap -sV localhost
+  3. What ports are open? What services are running?
+
+Hint: to run Wireshark from the terminal type:  wireshark &
+EOF
+
+      # ── Pre-made .pcap using Python scapy (generate without scapy using tcpreplay approach)
+      # We'll generate a realistic pcap with Python's scapy if available,
+      # otherwise use tcpdump to capture some loopback traffic during provisioning.
+
+      pip3 install scapy -q 2>/dev/null || true
+
+      python3 << 'PYEOF'
+try:
+    from scapy.all import *
+
+    packets = []
+
+    # Simulate a basic HTTP conversation over loopback
+    base_ip = "127.0.0.1"
+    packets += [
+        IP(src="192.168.1.10", dst="93.184.216.34")/TCP(sport=52341, dport=80, flags="S"),
+        IP(src="93.184.216.34", dst="192.168.1.10")/TCP(sport=80, dport=52341, flags="SA"),
+        IP(src="192.168.1.10", dst="93.184.216.34")/TCP(sport=52341, dport=80, flags="A"),
+        IP(src="192.168.1.10", dst="93.184.216.34")/TCP(sport=52341, dport=80, flags="PA")/
+            Raw(b"GET /index.html HTTP/1.1\r\nHost: example.com\r\nUser-Agent: Mozilla/5.0\r\n\r\n"),
+        IP(src="93.184.216.34", dst="192.168.1.10")/TCP(sport=80, dport=52341, flags="PA")/
+            Raw(b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: 27\r\n\r\n<html>Hello CyberLab!</html>"),
+        IP(src="192.168.1.10", dst="93.184.216.34")/TCP(sport=52341, dport=80, flags="FA"),
+        IP(src="93.184.216.34", dst="192.168.1.10")/TCP(sport=80, dport=52341, flags="FA"),
+    ]
+    # Add some ICMP (ping) packets
+    for i in range(4):
+        packets += [
+            IP(src="192.168.1.10", dst="8.8.8.8")/ICMP(type=8, code=0)/Raw(b"abcdefgh"),
+            IP(src="8.8.8.8", dst="192.168.1.10")/ICMP(type=0, code=0)/Raw(b"abcdefgh"),
+        ]
+    # Add some DNS
+    packets += [
+        IP(src="192.168.1.10", dst="8.8.8.8")/UDP(sport=54321, dport=53)/
+            DNS(rd=1, qd=DNSQR(qname="example.com")),
+        IP(src="8.8.8.8", dst="192.168.1.10")/UDP(sport=53, dport=54321)/
+            DNS(qr=1, aa=1, qd=DNSQR(qname="example.com"),
+                an=DNSRR(rrname="example.com", rdata="93.184.216.34")),
+    ]
+    wrpcap("/home/vagrant/practice/captures/sample.pcap", packets)
+    print("[cyberlab] sample.pcap written with scapy")
+except Exception as e:
+    print(f"[cyberlab] scapy not available ({e}), skipping pcap generation")
+PYEOF
+
+      # Fallback: capture loopback traffic with tcpdump if scapy failed
+      if [ ! -f /home/vagrant/practice/captures/sample.pcap ]; then
+        echo "[cyberlab] Generating pcap via tcpdump fallback..."
+        tcpdump -i lo -w /home/vagrant/practice/captures/sample.pcap -c 50 &
+        TCPDUMP_PID=$!
+        sleep 1
+        curl -s http://localhost/ > /dev/null 2>&1 || true
+        ping -c 4 127.0.0.1 > /dev/null 2>&1 || true
+        sleep 1
+        kill $TCPDUMP_PID 2>/dev/null || true
+      fi
+
+      # ── Simple HTTP server on port 8080 for live capture exercise ─────
+      cat > /etc/systemd/system/cyberlab-http.service << 'EOF'
+[Unit]
+Description=CyberLab practice HTTP server
+After=network.target
+
+[Service]
+User=vagrant
+ExecStart=/usr/bin/python3 -m http.server 8080 --directory /home/vagrant/practice
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+EOF
+      systemctl daemon-reload
+      systemctl enable cyberlab-http.service
+      systemctl start  cyberlab-http.service
+
+      # ── Desktop shortcut ──────────────────────────────────────────────
+      mkdir -p /home/vagrant/Desktop
+      cat > /home/vagrant/Desktop/Open_Wireshark.desktop << 'EOF'
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Open Wireshark
+Comment=Start Wireshark for packet capture
+Exec=wireshark
+Icon=wireshark
+Terminal=false
+Categories=Network;
+EOF
+      chmod +x /home/vagrant/Desktop/Open_Wireshark.desktop
+
+      cat > /home/vagrant/Desktop/Open_Terminal.desktop << 'EOF'
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Open Terminal
+Exec=bash -c "cd /home/vagrant/practice && x-terminal-emulator"
+Icon=utilities-terminal
+Terminal=false
+Categories=Utility;
+EOF
+      chmod +x /home/vagrant/Desktop/Open_Terminal.desktop
+      chown -R vagrant:vagrant /home/vagrant/Desktop
+      chown -R vagrant:vagrant /home/vagrant/practice
+
+      echo "[cyberlab] beginner-2 provisioning complete."
+      echo "[cyberlab] HTTP server running on :8080"
+      echo "[cyberlab] Snapshot reminder: boot the VM, open Wireshark,"
+      echo "[cyberlab] then run: VBoxManage snapshot cyberlab-beginner2-ubuntu take scenario-networking-ubuntu --pause"
+    SHELL
+  end
+
+end

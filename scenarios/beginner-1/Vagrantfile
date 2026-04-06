@@ -1,0 +1,145 @@
+# Scenario: beginner-1 — Command Line Basics
+# VM: Kali Linux
+# Provisions a Kali desktop with a practice directory pre-populated with
+# files and challenges for learning fundamental Linux command-line skills.
+
+Vagrant.configure("2") do |config|
+
+  config.vm.define "kali" do |kali|
+    kali.vm.box      = "kalilinux/rolling"
+    kali.vm.hostname = "kali-beginner"
+
+    kali.vm.network "private_network", ip: "192.168.56.10"
+
+    kali.vm.provider "virtualbox" do |vb|
+      vb.name   = "cyberlab-beginner1-kali"
+      vb.memory = 2048
+      vb.cpus   = 2
+      vb.gui    = true
+      vb.customize ["modifyvm", :id, "--natdnshostresolver1", "on"]
+      vb.customize ["modifyvm", :id, "--vram", "32"]
+    end
+
+    kali.vm.provision "shell", inline: <<-SHELL
+      export DEBIAN_FRONTEND=noninteractive
+
+      echo "[cyberlab] Setting up Command Line Basics scenario..."
+
+      # ── Practice directory structure ─────────────────────────────────
+      mkdir -p /home/vagrant/practice/{documents,scripts,logs,hidden}
+
+      # README / instructions
+      cat > /home/vagrant/practice/README.txt << 'EOF'
+==============================================
+  CyberLab — Scenario 1: Command Line Basics
+==============================================
+
+Your goal: explore this directory tree using only the terminal.
+
+Challenges:
+  1. List all files including hidden ones in this directory
+  2. Find out how many lines are in logs/server.log
+  3. Find the file that contains the word "password" somewhere inside it
+  4. Read the contents of the file you found
+  5. Create a new directory called "my_work" and copy README.txt into it
+  6. Change the permissions on scripts/backup.sh so it is executable
+  7. Run scripts/backup.sh and see what it does
+
+Useful commands:
+  ls -la          list all files with details
+  cd <dir>        change directory
+  cat <file>      print file contents
+  grep <word> .   search for a word in files (-r for recursive)
+  cp <src> <dst>  copy a file
+  mkdir <name>    create a directory
+  chmod +x <file> make a file executable
+  wc -l <file>    count lines in a file
+EOF
+
+      # documents/
+      cat > /home/vagrant/practice/documents/notes.txt << 'EOF'
+Meeting notes — 2024-01-15
+===========================
+Discussed network segmentation.
+Action items: update firewall rules, rotate API keys.
+Contact: admin@cyberlab.local
+EOF
+
+      cat > /home/vagrant/practice/documents/shopping.txt << 'EOF'
+Groceries:
+- milk
+- bread
+- eggs
+- coffee
+EOF
+
+      echo "Database connection string: host=192.168.56.10 user=admin password=S3cr3tP@ss" \
+        > /home/vagrant/practice/documents/config.txt
+
+      # logs/
+      python3 -c "
+import random, datetime
+lines = []
+levels = ['INFO', 'INFO', 'INFO', 'WARN', 'ERROR']
+msgs   = [
+  'User login successful',
+  'Request processed in 42ms',
+  'Cache miss for key session_token',
+  'Disk usage at 78%',
+  'Failed login attempt from 10.0.0.55',
+  'Service restarted',
+  'Config reloaded',
+]
+for i in range(120):
+    ts  = datetime.datetime(2024,1,15,8,0,0) + datetime.timedelta(minutes=i*3)
+    lvl = random.choice(levels)
+    msg = random.choice(msgs)
+    lines.append(f'{ts.strftime(\"%Y-%m-%d %H:%M:%S\")} [{lvl}] {msg}')
+print('\n'.join(lines))
+" > /home/vagrant/practice/logs/server.log
+
+      echo "App started at $(date)" > /home/vagrant/practice/logs/app.log
+
+      # scripts/
+      cat > /home/vagrant/practice/scripts/backup.sh << 'EOF'
+#!/bin/bash
+echo "Starting backup..."
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+mkdir -p /home/vagrant/practice/backups
+cp /home/vagrant/practice/documents/notes.txt \
+   /home/vagrant/practice/backups/notes_${TIMESTAMP}.txt
+echo "Backup saved to backups/notes_${TIMESTAMP}.txt"
+echo "Done."
+EOF
+      # intentionally not executable — student must chmod +x it
+
+      # hidden files (found with ls -la or ls -a)
+      echo "Flag: CL-BASICS-COMPLETE" > /home/vagrant/practice/.hidden_flag
+      echo "secret_api_key=abc123xyz" > /home/vagrant/practice/.env
+
+      # ── Ownership ─────────────────────────────────────────────────────
+      chown -R vagrant:vagrant /home/vagrant/practice
+
+      # ── Desktop shortcut to open a terminal in ~/practice ────────────
+      mkdir -p /home/vagrant/Desktop
+      cat > /home/vagrant/Desktop/Open_Terminal.desktop << 'EOF'
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Open Practice Terminal
+Comment=Opens a terminal in the practice directory
+Exec=bash -c "cd /home/vagrant/practice && xfce4-terminal --working-directory=/home/vagrant/practice"
+Icon=utilities-terminal
+Terminal=false
+Categories=Utility;
+EOF
+      chmod +x /home/vagrant/Desktop/Open_Terminal.desktop
+      chown vagrant:vagrant /home/vagrant/Desktop/Open_Terminal.desktop
+
+      echo "[cyberlab] beginner-1 provisioning complete."
+      echo "[cyberlab] Snapshot reminder: boot the VM, open the terminal in ~/practice,"
+      echo "[cyberlab] then run: VBoxManage snapshot cyberlab-beginner1-kali take scenario-cmdline-kali --pause"
+    SHELL
+  end
+
+end

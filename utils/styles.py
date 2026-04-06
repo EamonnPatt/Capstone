@@ -180,6 +180,22 @@ VM_DISPLAY_AREA_STYLE = f"""
     }}
 """
 
+# Splitter handle style
+SPLITTER_STYLE = f"""
+    QSplitter::handle {{
+        background-color: {COLORS['border']};
+    }}
+    QSplitter::handle:horizontal {{
+        width: 3px;
+    }}
+    QSplitter::handle:vertical {{
+        height: 3px;
+    }}
+    QSplitter::handle:hover {{
+        background-color: {COLORS['accent_blue']};
+    }}
+"""
+
 # Module card style
 MODULE_CARD_STYLE = f"""
     QFrame {{
